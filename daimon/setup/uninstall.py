@@ -22,12 +22,8 @@ def addon_homes() -> list[Path]:
 
 def tool_install() -> bool:
     """Whether this daimon is the uv tool the installer made (not a source checkout or someone's venv)."""
-    uv = shutil.which("uv")
-    if not uv:
-        return False
-    r = subprocess.run([uv, "tool", "dir"], capture_output=True, text=True)
-    tools = Path(r.stdout.strip()) if r.returncode == 0 else None
-    return bool(tools) and Path(sys.prefix).resolve() == (tools / "daimon").resolve()
+    from .update import tool_dir
+    return tool_dir() is not None
 
 
 def plan(home: Home) -> tuple[list[Path], list[str]]:
@@ -94,7 +90,8 @@ def remove_program() -> str:
     """Uninstall the uv tool once this process has exited (Windows won't delete a running program)."""
     uv = shutil.which("uv")
     if os.name == "nt":
-        script = f'for /l %i in (1,1,10) do (timeout /t 2 /nobreak >nul & "{uv}" tool uninstall daimon >nul 2>&1 && exit)'
+        # ping is the delay: `timeout` needs a console, which a detached cmd doesn't have
+        script = f'for /l %i in (1,1,10) do (ping -n 3 127.0.0.1 >nul & "{uv}" tool uninstall daimon >nul 2>&1 && exit)'
         subprocess.Popen(["cmd", "/c", script], close_fds=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, creationflags=subprocess.DETACHED_PROCESS |
                          subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)

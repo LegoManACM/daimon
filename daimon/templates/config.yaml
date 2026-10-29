@@ -53,6 +53,11 @@ knowledge:
   retrieval_max_chars: 6000 # how much retrieved knowledge goes into a prompt
   curator: curator          # the worker that files inbox items into knowledge/
 
+# New Daimon releases. `daimon update` installs one any time; `daimon config updates` changes these.
+updates:
+  check: true               # look for a new release once a day and tell you
+  auto: false               # install new releases by itself when it's idle (only when it runs in the background)
+
 # Where the agent reaches you besides `daimon chat`. Telegram: make a bot with @BotFather and put
 # TELEGRAM_TOKEN=... in the secrets file. Start `daimon run`, message the bot, and it tells you your chat id:
 # put that in the secrets file as TELEGRAM_CHAT_ID and restart. Only that chat is answered.

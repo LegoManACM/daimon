@@ -1,8 +1,10 @@
-"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service, uninstall."""
+"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service, update, uninstall."""
 from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.metadata
+import os
 import sys
 from dataclasses import dataclass
 
@@ -14,6 +16,13 @@ from .tasks import OPEN, summary
 
 DIM, BOLD, YELLOW, CYAN, RED, GREEN, RESET = ("\033[2m", "\033[1m", "\033[33m", "\033[36m", "\033[31m", "\033[32m",
                                               "\033[0m")
+
+
+def version() -> str:
+    try:
+        return importlib.metadata.version("daimon")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 @dataclass
@@ -102,6 +111,49 @@ def cmd_init(args: argparse.Namespace) -> None:
         print(f"  created {c}")
     print(f"Secrets file (never committed): {home.secrets_file}")
     print(f"Main model: {home.worker('main').model}. Change it in workers/main.md, or ask the agent.")
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    from .setup import update
+    home = Home(resolve_home(args.home))
+    try:
+        latest = update.latest()
+    except ConnectionError as e:
+        sys.exit(f"{e}. Try again later.")
+    have = update.current()
+    if not update.newer(latest, have):
+        print(f"Daimon {have} is the latest version.")
+        return
+    print(f"Daimon {latest} is out (you have {have}). Release notes: "
+          f"https://github.com/{update.REPO}/releases/tag/v{latest}")
+    if args.check:
+        print("`daimon update` installs it.")
+        return
+    if home.exists() and not update.running_jobs(home) and agent_running(home):
+        sys.exit("The agent is open in `daimon chat`. Close it (/exit), then run `daimon update` again.")
+    if not args.yes:
+        try:
+            answer = input(f"Update to {latest}? (y/n) ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes"):
+            sys.exit("Not updated.")
+    try:
+        log = update.launch(home if home.exists() else None, latest, wait_pid=os.getpid())
+    except RuntimeError as e:
+        sys.exit(f"Can't update: {e}.")
+    restarts = home.exists() and update.running_jobs(home)
+    print(f"Updating to {latest} now; it takes a minute{', and the background service restarts after' if restarts else ''}. "
+          f"If `daimon` isn't found meanwhile, give it a moment. Log: {log}")
+
+
+def agent_running(home: Home) -> bool:
+    """Whether something holds the agent's lock (`daimon chat` or `daimon run`)."""
+    try:
+        hold_lock(home).close()
+        return False
+    except SystemExit:
+        return True
 
 
 def cmd_service(args: argparse.Namespace) -> None:
@@ -202,6 +254,7 @@ async def run(home: Home) -> None:
         sys.exit(f"No channel to reach you on, so approvals would have nowhere to go. Put TELEGRAM_TOKEN=... (from "
                  f"@BotFather) in {home.secrets_file} and run `daimon run` again.")
     agent, gateway = await start(home, [Log(), *channels])
+    agent.auto_update = True  # headless only: an update restarts the agent, which would end a `daimon chat`
     try:
         if len(gateway.channels) == 1:
             sys.exit("No channel connected (see the errors above).")
@@ -275,12 +328,13 @@ async def command(text: str, agent: Agent) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="daimon", description="Daimon")
+    parser.add_argument("--version", action="version", version=f"daimon {version()}")
     parser.add_argument("--home", help="agent home folder (default: $DAIMON_HOME or ~/.daimon)")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
     p_config = sub.add_parser("config", help="change one part of the setup (no part: pick from a menu)")
     p_config.add_argument("section", nargs="?", choices=["model", "key", "knowledge", "telegram", "claude", "addons",
-                                                         "background", "show"])
+                                                         "background", "updates", "show"])
     p_init = sub.add_parser("init", help="create the agent's home folder")
     p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")
     sub.add_parser("chat", help="run the agent and chat with it (plus any channels, like Telegram)")
@@ -295,6 +349,9 @@ def main() -> None:
     p_inbox.add_argument("--title")
     p_inbox.add_argument("--for", dest="target", choices=["main"],
                          help="send straight to the main agent instead of the curator")
+    p_update = sub.add_parser("update", help="install the newest Daimon release (asks first)")
+    p_update.add_argument("--check", action="store_true", help="only say whether there's a newer one")
+    p_update.add_argument("--yes", action="store_true", help="don't ask first")
     p_uninstall = sub.add_parser("uninstall", help="remove Daimon: start at login, its folders, keys and the program")
     p_uninstall.add_argument("--yes", action="store_true", help="don't ask first")
     p_service = sub.add_parser("service", help="run the agent in the background, started at login")
@@ -318,6 +375,8 @@ def main() -> None:
     elif args.cmd == "config":
         from .setup.wizard import configure
         sys.exit(configure(args.home, args.section))
+    elif args.cmd == "update":
+        cmd_update(args)
     elif args.cmd == "uninstall":
         from .setup.uninstall import run as uninstall
         sys.exit(uninstall(args.home, args.yes))

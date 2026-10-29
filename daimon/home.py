@@ -175,16 +175,25 @@ class Home:
         return p if p.is_absolute() else self.root / p
 
     def set_knowledge_folder(self, folder: str) -> None:
-        """Point `knowledge.folder` at `folder` (text edit, so config.yaml keeps its comments)."""
-        text = self.read("config.yaml")
-        line = f"  folder: {json.dumps(folder.replace(chr(92), '/'))}"
-        if re.search(r"^  folder:.*$", text, re.M):
-            text = re.sub(r"^  folder:.*$", lambda _: line, text, count=1, flags=re.M)
-        elif re.search(r"^knowledge:\s*$", text, re.M):
-            text = re.sub(r"^knowledge:\s*$", lambda _: f"knowledge:\n{line}", text, count=1, flags=re.M)
+        self.set_option("knowledge", "folder", folder.replace(chr(92), "/"))
+
+    def set_option(self, section: str, key: str, value: Any) -> None:
+        """Set `section.key` in config.yaml. A text edit, so the file keeps its comments (the line's own too)."""
+        lines = self.read("config.yaml").splitlines()
+        start = next((i for i, line in enumerate(lines) if re.match(rf"^{section}:\s*(#.*)?$", line)), None)
+        new = f"  {key}: {json.dumps(value)}"
+        if start is None:
+            lines += ["", f"{section}:", new]
         else:
-            text = text.rstrip("\n") + f"\n\nknowledge:\n{line}\n"
-        self.write("config.yaml", text)
+            end = next((i for i in range(start + 1, len(lines))
+                        if lines[i].strip() and not lines[i][0].isspace() and not lines[i].startswith("#")), len(lines))
+            at = next((i for i in range(start + 1, end) if re.match(rf"^  {key}:", lines[i])), None)
+            if at is None:
+                lines.insert(start + 1, new)
+            else:
+                comment = re.search(r"\s+#.*$", lines[at])
+                lines[at] = f"{new.ljust(27)} {comment.group().strip()}" if comment else new
+        self.write("config.yaml", "\n".join(lines) + "\n")
 
     def models(self) -> dict[str, Any]:
         return self.read_yaml("models.yaml")

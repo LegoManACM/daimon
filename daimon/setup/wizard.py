@@ -15,7 +15,7 @@ import httpx
 from rich.markup import escape as esc
 
 from ..home import Home, git, resolve_home
-from . import addons, service
+from . import addons, service, update
 from .providers import (OLLAMA, PROVIDERS, KeyProblem, Model, Provider, clean_key, fetch_models, masked,
                         ollama_models, search)
 
@@ -153,7 +153,8 @@ class Wizard:
     SECTIONS = {"model": "Provider and main model", "key": "An API key", "knowledge": "Where knowledge lives",
                 "telegram": "Telegram",
                 "claude": "Claude Code", "addons": "Add-ons (Canvas, text messages)",
-                "background": "Running in the background", "show": "Show the current settings"}
+                "background": "Running in the background", "updates": "Updates",
+                "show": "Show the current settings"}
 
     def __init__(self, ask, console=None, home_flag: str | None = None):
         from rich.console import Console
@@ -593,6 +594,10 @@ class Wizard:
             self.ok(esc(line))
         self.done.background = lines
         self.done.running = start
+        if has_tg:
+            auto = self.ask.confirm("Install new Daimon releases by itself when it's idle? (Otherwise it tells you and "
+                                    "`daimon update` installs them.)", False)
+            self.set_updates("auto" if auto else "notify")
         if service.platform() == "linux":
             self.say("[dim]To keep it running while you're logged out: `loginctl enable-linger`.[/]")
 
@@ -600,6 +605,24 @@ class Wizard:
         if self.messages_proc:
             self.say(f"[dim]The messaging service keeps running for now (pid {self.messages_proc.pid}). After a "
                      "restart, start it with `daimon-messages run`.[/]")
+
+    def updates(self) -> None:
+        self.step(0, "Updates")
+        check, auto = update.settings(self.home)
+        self.say(f"You have Daimon {update.current()}. `daimon update` installs a newer release any time.")
+        pick = self.ask.select("When there's a new release:", [
+            ("Tell me, and I'll run `daimon update`", "notify"),
+            ("Install it by itself when it's idle (when it runs in the background)", "auto"),
+            ("Don't check", "off")], default="auto" if auto else "notify" if check else "off")
+        self.set_updates(pick)
+
+    def set_updates(self, mode: str) -> None:
+        self.home.set_option("updates", "check", mode != "off")
+        self.home.set_option("updates", "auto", mode == "auto")
+        self.home.commit(f"setup: updates {mode}", ["config.yaml"])
+        self.ok({"notify": "Updates: it tells you when there's a new release",
+                 "auto": "Updates: installed by itself when it's idle",
+                 "off": "Updates: not checked; run `daimon update` yourself"}[mode])
 
     def show(self) -> None:
         home = self.home
@@ -614,7 +637,10 @@ class Wizard:
                 ("Claude Code", "ready" if claude_path() else "not installed (optional)"),
                 ("Add-ons", ", ".join(a.title for a in addons.ADDONS.values()
                                       if a.key in home.mcp().get("mcpServers", {})) or "none"),
-                ("Background", "; ".join(service.status(home)) or "off")]
+                ("Background", "; ".join(service.status(home)) or "off"),
+                ("Updates", {(True, True): "installed by itself", (True, False): "tells you",
+                             (False, False): "not checked", (False, True): "not checked"}[update.settings(home)]
+                 + f" (you have {update.current()})")]
         self.out.print(self.table(rows))
 
     def table(self, rows: list[tuple[str, str]]):

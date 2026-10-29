@@ -284,7 +284,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: "/bin/claude")
     monkeypatch.setattr(wizard.service, "install", lambda h, **kw: installed.update(kw) or ["daimon: somewhere"])
-    ask = Scripted(str(home.root), "keep", "home", "ollama", "ollama_chat/test-model", "yes", "123:abc", [], True, False)
+    ask = Scripted(str(home.root), "keep", "home", "ollama", "ollama_chat/test-model", "yes", "123:abc", [], True, False, False)
     monkeypatch.setattr(wizard, "ollama_models", lambda: ["ollama_chat/test-model"])
     assert make_wizard(ask).run() == 0 and not ask.answers
     text = home.secrets_file.read_text(encoding="utf-8")
@@ -440,3 +440,70 @@ def test_uninstall_counts_notes_inside_the_home(home, monkeypatch, capsys):
     monkeypatch.setattr(uninstall.service, "installed", lambda h: [])
     uninstall.run(str(home.root), ask=lambda prompt: "")
     assert "including 1 knowledge notes" in capsys.readouterr().out and home.exists()
+
+
+# ---- updates ---------------------------------------------------------------------------------------------
+def test_versions_compare():
+    from daimon.setup import update
+    assert update.newer("0.1.10", "0.1.9") and update.newer("0.2.0", "0.1.1") and not update.newer("0.1.1", "0.1.1")
+    assert update.parse("v1.2.3-rc1") == (1, 2, 3)
+
+
+def test_available_checks_daily_and_announces_once(home, monkeypatch):
+    from daimon.setup import update
+    calls = []
+    monkeypatch.setattr(update, "latest", lambda: calls.append(1) or "9.9.9")
+    assert update.available(home) == "9.9.9" and update.available(home) == "9.9.9" and len(calls) == 1
+    assert update.available(home, force=True) == "9.9.9" and len(calls) == 2
+    assert update.announce_once(home, "9.9.9") and not update.announce_once(home, "9.9.9")
+    monkeypatch.setattr(update, "latest", lambda: "0.0.1")
+    assert update.available(home, force=True) is None
+
+
+def test_set_option_keeps_comments(home):
+    home.set_option("updates", "auto", True)
+    text = home.read("config.yaml")
+    assert "  auto: true" in text and "# install new releases by itself" in text
+    assert home.config()["updates"] == {"check": True, "auto": True}
+    home.set_option("brand_new", "x", 3)
+    assert home.config()["brand_new"] == {"x": 3}
+
+
+def test_update_script_keeps_addons_and_restarts(home, tmp_path, monkeypatch):
+    from daimon.setup import update
+    monkeypatch.setattr(update.importlib.util, "find_spec", lambda m: m == "daimon_canvas")
+    text = update.script(home, "0.2.0", 4242, True, tmp_path / "tool", tmp_path / "update.log")
+    assert "releases/download/v0.2.0/daimon-0.2.0-py3-none-any.whl" in text
+    assert "--with" in text and "daimon_canvas-0.2.0" in text and "daimon_messages" not in text
+    assert "4242" in text and "service stop" in text and "service start" in text
+    assert text.index("service stop") < text.index("tool") < text.rindex("service start")
+    quiet = update.script(None, "0.2.0", None, False, tmp_path / "tool", tmp_path / "update.log")
+    assert "service" not in quiet
+
+
+def test_update_command(home, monkeypatch, capsys):
+    from daimon.setup import update
+    monkeypatch.setattr(update, "latest", lambda: update.current())
+    monkeypatch.setattr(sys, "argv", ["daimon", "--home", str(home.root), "update"])
+    cli.main()
+    assert "is the latest version" in capsys.readouterr().out
+    monkeypatch.setattr(update, "latest", lambda: "99.0.0")
+    monkeypatch.setattr(sys, "argv", ["daimon", "--home", str(home.root), "update", "--check"])
+    cli.main()
+    assert "Daimon 99.0.0 is out" in capsys.readouterr().out
+    launched = []
+    monkeypatch.setattr(update, "launch", lambda h, v, wait_pid: launched.append(v) or home.cache / "update.log")
+    monkeypatch.setattr(update, "running_jobs", lambda h: False)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    monkeypatch.setattr(sys, "argv", ["daimon", "--home", str(home.root), "update"])
+    cli.main()
+    assert launched == ["99.0.0"] and "Updating to 99.0.0" in capsys.readouterr().out
+
+
+def test_config_updates(home, monkeypatch, clean_env):
+    monkeypatch.setattr(wizard.service, "status", lambda h: [])
+    ask = Scripted("auto")
+    assert make_wizard(ask).configure(home, "updates") == 0 and not ask.answers
+    assert wizard.update.settings(home) == (True, True)
+    make_wizard(Scripted("off")).configure(home, "updates")
+    assert wizard.update.settings(home) == (False, False)

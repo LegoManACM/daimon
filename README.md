@@ -22,7 +22,7 @@ curl -fsSL https://github.com/LegoManACM/daimon/releases/latest/download/install
 ```
 
 The installer sets up [uv](https://docs.astral.sh/uv/), which brings its own Python, installs Daimon, then starts
-`daimon setup`. Run the same line again to upgrade; your add-ons are kept.
+`daimon setup`. To update later, run `daimon update` (or the same line again); your add-ons are kept.
 
 You need:
 
@@ -48,7 +48,8 @@ You need:
 5. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
 6. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes and [text messages](messaging/README.md)
    through Google Messages. Setup installs them, connects them to the agent and runs their sign-in.
-7. **Background.** Start Daimon at login so it keeps running after you close the terminal.
+7. **Background.** Start Daimon at login so it keeps running after you close the terminal, and choose whether it
+   installs new releases by itself.
 
 Keys and tokens go in `~/.daimon-secrets.env`, outside the agent's folder.
 
@@ -64,6 +65,7 @@ daimon config knowledge    # where the notes live
 daimon config telegram
 daimon config addons       # Canvas, text messages
 daimon config background   # start at login
+daimon config updates      # whether it tells you about new releases or installs them
 daimon config show         # what's set up now
 ```
 
@@ -204,6 +206,19 @@ turn it off with `enabled: false`.
 
 `--home` or `DAIMON_HOME` points at a different agent folder; `DAIMON_SECRETS` at a different secrets file.
 `daimon init [--model ID]` makes the files without the wizard, for scripts.
+
+## Updating
+
+```bash
+daimon update           # asks first, then installs the newest release
+daimon update --check   # just says whether there's one
+daimon --version
+```
+
+The add-ons you have are updated with it, and the background service is stopped for the update and started again
+after. While it runs, Daimon also looks for a new release once a day and tells you (on Telegram and in
+`daimon chat`). Turn on `updates.auto` (`daimon config updates`) and the background agent installs new releases by
+itself when it's idle; it's off by default.
 
 ## Uninstall
 

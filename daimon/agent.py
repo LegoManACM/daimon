@@ -24,6 +24,8 @@ from .tasks import TaskStore
 from .thread import Thread
 
 TICK_SECONDS = 20
+UPDATE_FIRST_CHECK_S = 60      # after starting, so a restart loop doesn't hammer GitHub
+UPDATE_EVERY_S = 3600          # how often to look (GitHub itself is asked at most daily)
 QUIET = "[quiet]"
 
 
@@ -49,6 +51,7 @@ class Agent:
         self._tick = asyncio.Event()
         self._background: list[asyncio.Task] = []
         self._reported: set[str] = set()
+        self.auto_update = False  # `daimon run` turns it on; updates.auto in config.yaml decides
 
     # ---- lifecycle -----------------------------------------------------------------------------------
     async def start(self, scheduler: bool = True) -> None:
@@ -57,6 +60,7 @@ class Agent:
         self._background.append(asyncio.create_task(self._main_loop()))
         if scheduler:
             self._background.append(asyncio.create_task(self._scheduler()))
+            self._background.append(asyncio.create_task(self._updates()))
 
     async def stop(self) -> None:
         for t in [*self._background, *self.workers.values()]:
@@ -107,6 +111,29 @@ class Agent:
                   "inbox": "Inbox item"}
         return f"[{labels[item.kind]}]\n{item.text}\n\n(Background event: the user didn't send this. Reply " \
                f"with what they should hear, or start your reply with {QUIET} if nothing needs their attention.)"
+
+    # ---- updates -------------------------------------------------------------------------------------
+    async def _updates(self) -> None:
+        """Look for a new Daimon release (at most daily, see setup/update.py); say so once, or install it when
+        updates.auto is on and nothing is running."""
+        from .setup import update
+        await asyncio.sleep(UPDATE_FIRST_CHECK_S)
+        while True:
+            check, auto = update.settings(self.home)
+            try:
+                version = await asyncio.to_thread(update.available, self.home) if check else None
+            except ConnectionError:
+                version = None
+            if version and auto and self.auto_update and not self.workers:
+                try:
+                    await asyncio.to_thread(update.launch, self.home, version, None)
+                    self.surface.event("notify", f"Updating Daimon to {version}; back in a minute.")
+                except Exception as e:  # noqa: BLE001
+                    self.surface.event("error", f"update to {version}: {e}")
+            elif version and update.announce_once(self.home, version):
+                self.surface.event("notify", f"Daimon {version} is out (you have {update.current()}). Run "
+                                             "`daimon update` to install it.")
+            await asyncio.sleep(UPDATE_EVERY_S)
 
     # ---- scheduler -----------------------------------------------------------------------------------
     async def _scheduler(self) -> None:
