@@ -133,6 +133,11 @@ def pair(home: Home, cookies_file: str | None, qr: bool = False) -> int:
             if s.get("emoji") and s["emoji"] != shown:
                 shown = s["emoji"]
                 print(f"\nTap this emoji on your phone: {shown}")
+            if shown and s.get("state") == "logged_out":  # paired, then signed straight out: don't wait it out
+                print("Pairing went through, but Google signed this computer straight back out"
+                      + (f" ({s['detail']})" if s.get("detail") else "") + ". Pair again; if it keeps happening, "
+                      "remove old computers in Google Messages → Device pairing first.")
+                return 1
             if s.get("paired") and s.get("state") in ("connecting", "connected"):
                 print("Paired. Messages from the last few days are being fetched now; new ones are stored as they "
                       "arrive.")

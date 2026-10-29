@@ -398,6 +398,32 @@ func (s *sidecar) connect(auth *libgm.AuthData) {
 	s.status("connected", "")
 }
 
+// confirmLoggedOut checks a sign-out notice before forgetting the session. Right after pairing, Google replays a
+// backlog to the new connection, and libgm reads a stale sign-out marker in it as a fresh one (it doesn't check
+// whether the message is old), which used to drop every new pairing a moment after the emoji. So ask the phone for
+// something: only a refusal of our credentials means we're really signed out.
+func (s *sidecar) confirmLoggedOut() {
+	cli := s.client()
+	if cli == nil {
+		return
+	}
+	time.Sleep(3 * time.Second) // let the replayed backlog pass
+	if s.client() != cli {
+		return // reconnected or unpaired meanwhile
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	_, err := cli.ListConversations(ctx, &gmproto.ListConversationsRequest{
+		Count: 1, Folder: gmproto.ListConversationsRequest_INBOX})
+	if err != nil && (errors.Is(err, events.ErrInvalidCredentials) || errors.Is(err, events.ErrRequestedEntityNotFound) ||
+		strings.Contains(err.Error(), "http 401")) {
+		s.dropSession("logged_out", "The Google account signed this device out. Pair again.")
+		return
+	}
+	// Still answering (or just slow, which the ping and listen errors handle): the notice was stale.
+	s.log.Warn().AnErr("check", err).Msg("Ignored a sign-out notice; the session still works")
+}
+
 func (s *sidecar) client() *libgm.Client {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -428,7 +454,7 @@ func (s *sidecar) onEvent(raw any) {
 	case *gmproto.RevokePairData:
 		go s.dropSession("logged_out", "The phone unpaired this device. Pair again.")
 	case *events.GaiaLoggedOut:
-		go s.dropSession("logged_out", "The Google account signed this device out. Pair again.")
+		go s.confirmLoggedOut()
 	case *events.AuthTokenRefreshed:
 		if cli := s.client(); cli != nil {
 			s.saveSession(cli.AuthData)
