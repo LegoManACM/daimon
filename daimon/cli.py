@@ -1,4 +1,4 @@
-"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service."""
+"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service, uninstall."""
 from __future__ import annotations
 
 import argparse
@@ -295,6 +295,8 @@ def main() -> None:
     p_inbox.add_argument("--title")
     p_inbox.add_argument("--for", dest="target", choices=["main"],
                          help="send straight to the main agent instead of the curator")
+    p_uninstall = sub.add_parser("uninstall", help="remove Daimon: start at login, its folders, keys and the program")
+    p_uninstall.add_argument("--yes", action="store_true", help="don't ask first")
     p_service = sub.add_parser("service", help="run the agent in the background, started at login")
     p_service.add_argument("action", choices=["install", "uninstall", "status", "start", "stop"])
     p_service.add_argument("--messages", action=argparse.BooleanOptionalAction, default=None,
@@ -316,6 +318,9 @@ def main() -> None:
     elif args.cmd == "config":
         from .setup.wizard import configure
         sys.exit(configure(args.home, args.section))
+    elif args.cmd == "uninstall":
+        from .setup.uninstall import run as uninstall
+        sys.exit(uninstall(args.home, args.yes))
     elif args.cmd == "service":
         cmd_service(args)
     elif args.cmd == "init":

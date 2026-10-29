@@ -404,3 +404,39 @@ def test_knowledge_folder_commits_in_its_own_repo(home, tmp_path):
     assert "(change " in out
     log = sp.run(["git", "log", "--format=%s"], cwd=shared, capture_output=True, text=True).stdout
     assert "knowledge: note x" in log
+
+
+# ---- uninstall ------------------------------------------------------------------------------------------
+def test_uninstall_asks_and_keeps_outside_knowledge(home, tmp_path, monkeypatch, capsys):
+    from daimon.setup import uninstall
+    monkeypatch.setenv("DAIMON_CANVAS_HOME", str(tmp_path / "canvas"))
+    monkeypatch.setenv("DAIMON_MESSAGES_HOME", str(tmp_path / "messages"))
+    (tmp_path / "messages").mkdir()
+    home.set_secret("ANTHROPIC_API_KEY", "sk-ant-x")
+    vault = tmp_path / "vault"
+    (vault / "people").mkdir(parents=True)
+    (vault / "people" / "sam.md").write_text("---\ntype: person\n---\nSam.\n", encoding="utf-8")
+    home.set_knowledge_folder(str(vault))
+    monkeypatch.setattr(uninstall, "tool_install", lambda: False)
+    monkeypatch.setattr(uninstall, "stop_running", lambda: None)
+    monkeypatch.setattr(uninstall.service, "installed", lambda h: [])
+    monkeypatch.setattr(uninstall.service, "uninstall", lambda h: [])
+
+    assert uninstall.run(str(home.root), ask=lambda prompt: "n") == 1
+    assert home.exists() and "Nothing was removed" in capsys.readouterr().out
+
+    assert uninstall.run(str(home.root), ask=lambda prompt: "y") == 0
+    out = capsys.readouterr().out
+    assert not home.root.exists() and not home.secrets_file.exists() and not (tmp_path / "messages").exists()
+    assert (vault / "people" / "sam.md").exists() and f"Kept: your knowledge folder, {vault}" in out
+    assert "Device pairing" in out and "Daimon is uninstalled" in out
+
+
+def test_uninstall_counts_notes_inside_the_home(home, monkeypatch, capsys):
+    from daimon.setup import uninstall
+    (home.root / "knowledge" / "people").mkdir(parents=True, exist_ok=True)
+    (home.root / "knowledge" / "people" / "sam.md").write_text("---\ntype: person\n---\nSam.\n", encoding="utf-8")
+    monkeypatch.setattr(uninstall, "tool_install", lambda: False)
+    monkeypatch.setattr(uninstall.service, "installed", lambda h: [])
+    uninstall.run(str(home.root), ask=lambda prompt: "")
+    assert "including 1 knowledge notes" in capsys.readouterr().out and home.exists()

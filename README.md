@@ -208,12 +208,13 @@ turn it off with `enabled: false`.
 ## Uninstall
 
 ```bash
-daimon service uninstall
-uv tool uninstall daimon
+daimon uninstall
 ```
 
-Then delete `~/.daimon`, `~/.daimon-secrets.env`, and `~/.daimon-canvas` / `~/.daimon-messages` if you used the
-add-ons.
+It lists what it's about to remove and asks first: starting at login, the agent's folder (`~/.daimon`), the
+secrets file, the add-ons' folders and the program itself. A knowledge folder that lives outside the agent's
+folder is kept. `--yes` skips the question. If you paired text messages, also remove the computer in Google
+Messages > Device pairing.
 
 ## Development
 
