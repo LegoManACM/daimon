@@ -1,6 +1,6 @@
 # Releasing
 
-Daimon is installed from GitHub releases only (not PyPI). The three packages share one version.
+Daimon is installed from GitHub releases only (not PyPI). The four packages share one version.
 
 1. Bump `version` in all four `pyproject.toml` files (root, `canvas/`, `messaging/`, `calendars/`) to the same `X.Y.Z`, and commit.
 2. Tag and push the tag:

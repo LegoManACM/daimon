@@ -18,11 +18,14 @@ Most keys take effect on your next step; channels and harness drivers on restart
 | `limits.harness.<name>.max_runs_per_day` | | caps a harness (guide `workers`) |
 | `harnesses` | claude-code | external agents (guide `workers`) |
 | `harness.workspaces` | next to home | where harness workspaces go |
+| `knowledge.folder` | `knowledge` | where the notes live: a folder in the home, or any path (an Obsidian vault) |
 | `knowledge.embeddings` | `none` | or a LiteLLM embedding model, for meaning-based search |
 | `knowledge.retrieve_for_main` | true | look up notes for every message to you |
 | `knowledge.retrieval_max_chars` | 6000 | how much retrieved knowledge goes in a prompt |
 | `knowledge.curator` | `curator` | the worker that files inbox items into knowledge |
 | `channels` | | guide `connections` |
+
+The user can change any part of their setup themselves with `daimon config <part>` (model, key, knowledge, telegram, claude, addons, background, updates, show), and update with `daimon update`. Point them there for what you can't do: API keys, sign-ins, start at login.
 
 Example: the user says "you keep stopping halfway on big jobs":
 ```yaml

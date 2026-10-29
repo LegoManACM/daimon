@@ -21,7 +21,7 @@ from . import service
 
 REPO = "LegoManACM/daimon"
 CHECK_EVERY_S = 24 * 3600
-ADDONS = ("daimon_canvas", "daimon_messages")
+ADDONS = ("daimon_canvas", "daimon_messages", "daimon_calendar")
 
 
 def current() -> str:

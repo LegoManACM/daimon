@@ -34,7 +34,7 @@ Rules:
 - A model needs its provider key in the user's secrets file (ANTHROPIC_API_KEY, OPENAI_API_KEY,
   OPENROUTER_API_KEY, GEMINI_API_KEY, ...). The prompt's Runtime lists models that are "listed but not usable
   yet" with the missing key. You can't read or set secrets: ask the user to add the key to the secrets file
-  (shown as `${NAME}` in config; they can also run `daimon setup`).
+  (shown as `${NAME}` in config; `daimon config key` does it for them).
 - `${NAME}` in `params` is read from the secrets file when the call is made; the value never passes through you.
 - Change a worker's model by editing `model:` in `workers/<name>.md`. It's checked against models.yaml, and asks
   if that model has `approval: ask`.

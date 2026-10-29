@@ -9,7 +9,7 @@ Add-ons are separate programs (text messages, calendar, Canvas, ...) that you re
 lists the connected ones with what each is for, and the ones not connected yet. For a connected one,
 `guide("<name>")` shows its tools, their consent levels and the events it sends.
 
-- The user connects an add-on with `daimon setup`: it installs it, signs in to the account (Google, Microsoft,
+- The user connects an add-on with `daimon setup` (or just that step: `daimon config addons`): it installs it, signs in to the account (Google, Microsoft,
   Canvas token, phone pairing) and adds it to `mcp.json` with sensible consent. You can't do the sign-in; when a
   request needs an add-on that isn't connected, say which one and that `daimon setup` connects it.
 - Add-ons don't know each other. Connect them with reactions (guide `reactions`), never by asking the user to

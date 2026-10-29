@@ -46,8 +46,8 @@ You need:
 4. **Telegram** (optional). Make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message
    the bot once; setup picks up your chat id itself.
 5. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
-6. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes and [text messages](messaging/README.md)
-   through Google Messages. Setup installs them, connects them to the agent and runs their sign-in.
+6. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes, [text messages](messaging/README.md)
+   through Google Messages, and your [calendars](calendars/README.md) (Google, Outlook, iCloud, .ics). Setup installs them, connects them to the agent and runs their sign-in.
 7. **Background.** Start Daimon at login so it keeps running after you close the terminal, and choose whether it
    installs new releases by itself.
 
@@ -202,7 +202,7 @@ turn it off with `enabled: false`.
 |---|---|
 | `~/.daimon/` | the agent: SELF.md, POLICY.md, MEMORY.md, workers/, routines/, knowledge/ (unless it lives elsewhere), mcp.json, models.yaml, config.yaml (a git repo) |
 | `~/.daimon-secrets.env` | API keys and tokens, never committed |
-| `~/.daimon-canvas/`, `~/.daimon-messages/` | the add-ons' own folders |
+| `~/.daimon-canvas/`, `~/.daimon-messages/`, `~/.daimon-calendar/` | the add-ons' own folders |
 
 `--home` or `DAIMON_HOME` points at a different agent folder; `DAIMON_SECRETS` at a different secrets file.
 `daimon init [--model ID]` makes the files without the wizard, for scripts.
@@ -236,11 +236,11 @@ Messages > Device pairing.
 ```bash
 git clone https://github.com/LegoManACM/daimon && cd daimon
 uv venv --python 3.12
-uv pip install -e . -e canvas -e messaging
-uv run pytest tests canvas/tests messaging/tests
+uv pip install -e . -e canvas -e messaging -e calendars
+uv run pytest tests canvas/tests messaging/tests calendars/tests
 ```
 
-From a checkout, `daimon setup` installs add-ons editable from `canvas/` and `messaging/` instead of downloading
+From a checkout, `daimon setup` installs add-ons editable from `canvas/`, `messaging/` and `calendars/` instead of downloading
 them. [DESIGN.md](DESIGN.md) has the design, and [RELEASING.md](RELEASING.md) how releases are made.
 
 ```
@@ -265,6 +265,7 @@ daimon/harness/      external agents: driver interface + registry, sessions, too
 daimon/templates/    starter files for a new home
 canvas/              daimon-canvas, the Canvas add-on
 messaging/           daimon-messages, the text messages add-on (Python service + Go link to Google Messages)
+calendars/           daimon-calendar, the calendar add-on (Google, Microsoft, CalDAV, .ics)
 ```
 
 ## License

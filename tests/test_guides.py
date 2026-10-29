@@ -53,7 +53,7 @@ def test_guide_reads_topics_and_add_ons(home):
     assert guide.read(home, hub, "Consent").startswith("# Consent")
     demo = guide.read(home, hub, "demo")
     assert "demo.ping: something happened" in demo and "- demo__ping [ask]: Ping someone." in demo
-    assert "daimon setup" in guide.read(home, hub, "canvas")
+    assert "daimon config addons" in guide.read(home, hub, "canvas")
     assert "Topics:" in guide.read(home, hub, "nope")
 
 

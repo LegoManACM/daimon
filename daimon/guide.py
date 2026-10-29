@@ -42,7 +42,7 @@ def index(home: Home, hub: McpHub) -> str:
         lines += [f"## {s.name}", s.overview(), more, ""]
     missing = missing_addons(home)
     if missing:
-        lines.append("Not connected yet (the user connects one with `daimon setup`): " +
+        lines.append("Not connected yet (the user connects one with `daimon config addons`): " +
                      "; ".join(f"{k} ({v})" for k, v in missing.items()))
         lines.append("")
     lines.append("Guides: before setting up or changing any of these, read the guide with `guide(topic)`. Each has "
@@ -70,8 +70,8 @@ def read(home: Home, hub: McpHub, topic: str) -> str:
         return "\n\n".join(parts)
     missing = missing_addons(home)
     if topic in missing:
-        return (f"{topic} ({missing[topic]}) isn't connected. The user connects it by running `daimon setup` and "
-                "picking it; that installs it, signs in to the account and adds it to mcp.json. You can't do the "
-                "sign-in for them. Once it's connected, `guide('" + topic + "')` shows its tools and events.")
+        return (f"{topic} ({missing[topic]}) isn't connected. The user connects it by running `daimon config "
+                "addons` and picking it; that installs it, signs in to the account and adds it to mcp.json. You can't "
+                "do the sign-in for them. Once it's connected, `guide('" + topic + "')` shows its tools and events.")
     known = list(guides) + [s for s in hub.servers] + list(missing)
     return f"No guide called {topic!r}. Topics: {', '.join(known)}."

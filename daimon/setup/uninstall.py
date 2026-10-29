@@ -17,7 +17,8 @@ RUNNING = ["daimon_messages run", "-m daimon --home"]  # what start-at-login and
 def addon_homes() -> list[Path]:
     return [Path(os.environ.get(var) or default).expanduser()
             for var, default in (("DAIMON_CANVAS_HOME", "~/.daimon-canvas"),
-                                 ("DAIMON_MESSAGES_HOME", "~/.daimon-messages"))]
+                                 ("DAIMON_MESSAGES_HOME", "~/.daimon-messages"),
+                                 ("DAIMON_CALENDAR_HOME", "~/.daimon-calendar"))]
 
 
 def tool_install() -> bool:
