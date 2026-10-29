@@ -88,8 +88,43 @@
             }
         } catch { }
 
+        # A running Daimon (started at login, or the messages service setup started) keeps its files open and
+        # Windows won't replace them, so stop it first and start it again afterwards.
+        $restart = $false
+        if (-not $DryRun) {
+            $toolDir = Join-Path (& $uv tool dir | Out-String).Trim() 'daimon'
+            $old = Get-Command daimon -ErrorAction SilentlyContinue
+            if ($old) {
+                try {
+                    $restart = (cmd /c "`"$($old.Source)`" service status 2>nul" | Out-String) -match ', running'
+                    if ($restart) {
+                        Write-Host 'Stopping the running Daimon so it can be updated...'
+                        & $old.Source service stop | Out-Null
+                    }
+                } catch { }
+            }
+            Get-CimInstance Win32_Process | Where-Object {
+                ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($toolDir, [StringComparison]::OrdinalIgnoreCase)) -or
+                ($_.CommandLine -and $_.CommandLine.IndexOf($toolDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            } | ForEach-Object {
+                Write-Host "Stopping $($_.Name) (pid $($_.ProcessId)), which is running from the old install..."
+                cmd /c "taskkill /PID $($_.ProcessId) /T /F >nul 2>&1"
+                Wait-Process -Id $_.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+            }
+        }
+
         Write-Host "Installing Daimon $version..."
-        Invoke-Native $uv $installArgs
+        for ($try = 1; ; $try++) {
+            try { Invoke-Native $uv $installArgs; break }
+            catch {
+                if ($DryRun -or $try -ge 4) { throw }
+                # uv sometimes can't delete the old install even with nothing running from it (a scanner or file
+                # watcher holding the folder); PowerShell can. The add-ons to keep were already worked out above.
+                Write-Host 'Clearing out the old install and trying again...'
+                Start-Sleep -Seconds 2
+                Remove-Item -Recurse -Force $toolDir -ErrorAction SilentlyContinue
+            }
+        }
         try { Invoke-Native $uv @('tool', 'update-shell') } catch { Write-Warning $_ }
 
         if (-not $DryRun) {
@@ -103,6 +138,9 @@
             Write-Host 'Run `daimon setup` when you''re ready.'
         } else {
             Invoke-Native 'daimon' @('setup')
+        }
+        if ($restart) {
+            try { Invoke-Native 'daimon' @('service', 'start') } catch { Write-Warning $_ }
         }
     } catch {
         Write-Host "daimon install: $($_.Exception.Message)" -ForegroundColor Red

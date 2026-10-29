@@ -95,6 +95,15 @@ main() {
         fi
     done
 
+    # Stop a running Daimon (started at login) while its files are replaced, and start it again afterwards.
+    restart=""
+    if [ -z "${DAIMON_DRY_RUN:-}" ] && command -v daimon >/dev/null 2>&1; then
+        if daimon service status 2>/dev/null | grep -q ', running'; then
+            say "Stopping the running Daimon so it can be updated..."
+            daimon service stop >/dev/null 2>&1 && restart=1
+        fi
+    fi
+
     say "Installing Daimon $version..."
     run "$uv" "$@"
     run "$uv" tool update-shell || true
@@ -120,6 +129,7 @@ main() {
     else
         say "No terminal to ask questions in, so run \`daimon setup\` yourself to finish."
     fi
+    [ -z "$restart" ] || run daimon service start || true
 }
 
 main "$@"
