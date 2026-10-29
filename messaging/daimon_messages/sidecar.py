@@ -120,6 +120,8 @@ async def download(binary: Path, version: str | None = None, name: str | None = 
         return "Couldn't tell which version of daimon-messages is installed, so there's nothing to download."
     base = f"https://github.com/{REPO}/releases/download/v{version}"
     part = binary.with_name(binary.name + ".part")
+    if local := os.environ.get("DAIMON_RELEASE_DIR"):  # release files on disk, for testing a build before publishing
+        transport = httpx.MockTransport(lambda request: _from_folder(Path(local), request))
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_S, transport=transport) as http:
             r = await http.get(f"{base}/SHA256SUMS")
@@ -149,6 +151,11 @@ async def download(binary: Path, version: str | None = None, name: str | None = 
         return f"Couldn't install the Google Messages link at {binary}: {e}"
     log.info("Downloaded the sidecar (v%s) to %s", version, binary)
     return ""
+
+
+def _from_folder(folder: Path, request: httpx.Request) -> httpx.Response:
+    path = folder / request.url.path.rsplit("/", 1)[-1]
+    return httpx.Response(200, content=path.read_bytes()) if path.is_file() else httpx.Response(404)
 
 
 async def install(binary: Path) -> str:

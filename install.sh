@@ -2,7 +2,8 @@
 # Installs Daimon on macOS or Linux:
 #   curl -fsSL https://github.com/LegoManACM/daimon/releases/latest/download/install.sh | sh
 # DAIMON_VERSION=X.Y.Z picks a version (default: the latest release), DAIMON_NO_SETUP=1 skips `daimon setup`,
-# DAIMON_DRY_RUN=1 prints what it would run instead of running it.
+# DAIMON_DRY_RUN=1 prints what it would run instead of running it, DAIMON_RELEASE_DIR=<folder> installs from release
+# files on disk (to test a build before publishing).
 set -eu
 
 REPO="LegoManACM/daimon"
@@ -68,18 +69,29 @@ main() {
 
     version="${DAIMON_VERSION:-}"
     version="${version#v}"
+    base="https://github.com/$REPO/releases/download/v$version"
+    if [ -n "${DAIMON_RELEASE_DIR:-}" ]; then
+        base=$(cd "$DAIMON_RELEASE_DIR" && pwd) || fail "no folder at $DAIMON_RELEASE_DIR"
+        for f in "$base"/daimon-*-py3-none-any.whl; do
+            [ -f "$f" ] || fail "no daimon-*.whl in $base"
+            version=${f##*/daimon-}
+            version=${version%-py3-none-any.whl}
+            break
+        done
+    fi
     if [ -z "$version" ]; then
         version=$(latest_version) || true
         [ -n "$version" ] || fail "couldn't find the latest release. Set DAIMON_VERSION=X.Y.Z and try again."
     fi
-    wheel="https://github.com/$REPO/releases/download/v$version/daimon-$version-py3-none-any.whl"
+    [ -n "${DAIMON_RELEASE_DIR:-}" ] || base="https://github.com/$REPO/releases/download/v$version"
+    wheel="$base/daimon-$version-py3-none-any.whl"
 
     # Keep the add-ons an earlier install has (the wizard adds them), so upgrading doesn't drop them.
     set -- tool install --python 3.12 --force "$wheel"
     py="$("$uv" tool dir 2>/dev/null)/daimon/bin/python"
     for m in daimon_canvas daimon_messages; do
         if [ -x "$py" ] && "$py" -c "import $m" >/dev/null 2>&1; then
-            set -- "$@" --with "https://github.com/$REPO/releases/download/v$version/$m-$version-py3-none-any.whl"
+            set -- "$@" --with "$base/$m-$version-py3-none-any.whl"
         fi
     done
 

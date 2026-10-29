@@ -52,7 +52,10 @@ def source(addon: Addon) -> list[str]:
     if (local / "pyproject.toml").exists():
         return ["-e", str(local)]
     v = version()
-    return [f"https://github.com/{REPO}/releases/download/v{v}/{addon.module}-{v}-py3-none-any.whl"]
+    wheel = f"{addon.module}-{v}-py3-none-any.whl"
+    if (local := os.environ.get("DAIMON_RELEASE_DIR")) and (Path(local) / wheel).is_file():  # testing a local build
+        return [str(Path(local) / wheel)]
+    return [f"https://github.com/{REPO}/releases/download/v{v}/{wheel}"]
 
 
 def install_command(addon: Addon, python: str = sys.executable) -> list[str]:
