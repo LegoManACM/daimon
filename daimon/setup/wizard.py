@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from rich.markup import escape as esc
 
-from ..home import Home, resolve_home
+from ..home import Home, git, resolve_home
 from . import addons, service
 from .providers import (OLLAMA, PROVIDERS, KeyProblem, Model, Provider, clean_key, fetch_models, masked,
                         ollama_models, search)
@@ -139,6 +139,7 @@ class Ask:
 
 @dataclass
 class Done:
+    knowledge: str = ""
     model: str = ""
     telegram: str = ""
     claude: bool = False
@@ -148,8 +149,9 @@ class Done:
 
 
 class Wizard:
-    STEPS = 7
-    SECTIONS = {"model": "Provider and main model", "key": "An API key", "telegram": "Telegram",
+    STEPS = 8
+    SECTIONS = {"model": "Provider and main model", "key": "An API key", "knowledge": "Where knowledge lives",
+                "telegram": "Telegram",
                 "claude": "Claude Code", "addons": "Add-ons (Canvas, text messages)",
                 "background": "Running in the background", "show": "Show the current settings"}
 
@@ -196,6 +198,7 @@ class Wizard:
     def run(self) -> int:
         try:
             self.welcome()
+            self.knowledge()
             self.model()
             self.telegram()
             self.claude()
@@ -259,15 +262,64 @@ class Wizard:
         self.say(f"[dim]Secrets (API keys, tokens) go in {esc(str(home.secrets_file))}, outside the agent's folder, so the "
                  "agent itself can never read them.[/]")
 
+    def knowledge(self) -> None:
+        home = self.home
+        self.step(2, "Knowledge")
+        self.say("The agent keeps what it learns (people, projects, preferences) as markdown notes. They can live in "
+                 "its own folder, or in one you already have, like an Obsidian vault or the notes another agent "
+                 "keeps: point several agents at one folder and they share what they know.")
+        current, own = home.knowledge, home.root / "knowledge"
+        options = [(f"In the agent's folder ({own})", "home"), ("Another folder...", "other")]
+        if current.resolve() != own.resolve():
+            options.insert(0, (f"Keep using {current}", "keep"))
+        choice = self.ask.select("Where should its knowledge live?", options, default=options[0][1])
+        if choice == "keep":
+            self.done.knowledge = str(current)
+            return
+        if choice == "home":
+            folder, path = "knowledge", own
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            while True:
+                raw = self.ask.text("Folder (an existing one, or a new one to create):")
+                if not raw:
+                    return
+                path = Path(raw).expanduser().resolve()
+                if path.is_file():
+                    self.warn(f"{esc(str(path))} is a file. Pick a folder.")
+                    continue
+                if not path.exists():
+                    if not self.ask.confirm(f"{path} doesn't exist yet. Create it?", True):
+                        continue
+                    path.mkdir(parents=True)
+                break
+            try:
+                folder = "~/" + path.relative_to(Path.home()).as_posix()
+            except ValueError:
+                folder = path.as_posix()
+        if path.resolve() != current.resolve():
+            home.set_knowledge_folder(folder)
+            home.commit(f"setup: knowledge in {folder}", ["config.yaml"])
+        notes = len(list(path.rglob("*.md")))
+        self.ok(f"Knowledge: {path} ({notes} note{'' if notes == 1 else 's'} there now)")
+        self.done.knowledge = str(path)
+        if path.resolve() != own.resolve() and not (path / ".git").exists() and \
+                git(path, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+            self.say("[dim]It isn't a git repo, so the agent's edits there have no history to undo with. Run "
+                     "`git init` in it if you'd like that.[/]")
+        old = [n for n in current.rglob("*.md") if n.name not in ("index.md", "log.md")] if current.exists() else []
+        if old and current.resolve() != path.resolve():
+            self.say(f"[dim]The {len(old)} notes in {esc(str(current))} stay there; copy them over to keep them.[/]")
+
     def model(self) -> None:
         home = self.home
-        self.step(2, "Model provider")
+        self.step(3, "Model provider")
         current = home.worker("main").model
         p = PROVIDERS[self.ask.select("Which AI provider should the agent use?",
                                       [(v.title, k) for k, v in PROVIDERS.items()],
                                       default=next((k for k in PROVIDERS if current.startswith(k)), "anthropic"))]
         self.models = self.api_key(p) if p.env else self.ollama() if p.key == "ollama" else None
-        self.step(3, "Main model")
+        self.step(4, "Main model")
         while True:
             model = self.pick_model(p, current)
             if not model:
@@ -386,7 +438,7 @@ class Wizard:
 
     def telegram(self) -> None:
         home = self.home
-        self.step(4, "Telegram (optional)")
+        self.step(5, "Telegram (optional)")
         self.say("With a Telegram bot you can talk to your agent from your phone, get its notices, and approve "
                  "what it wants to do while it runs in the background.")
         have = os.environ.get("TELEGRAM_TOKEN")
@@ -445,7 +497,7 @@ class Wizard:
         self.done.telegram = f"@{name}"
 
     def claude(self) -> None:
-        self.step(5, "Claude Code")
+        self.step(6, "Claude Code")
         if path := claude_path():
             self.done.claude = True
             self.ok(f"Found Claude Code ({esc(path)}). The claude-code harness is ready: the agent can hand coding and "
@@ -459,7 +511,7 @@ class Wizard:
 
     def addons(self) -> None:
         home = self.home
-        self.step(6, "Add-ons")
+        self.step(7, "Add-ons")
         servers = home.mcp().get("mcpServers", {})
         picked = self.ask.checkbox("Add-ons to set up (Space to tick, Enter to go on):",
                                    [(f"{a.title}: {a.blurb}", a.key, a.key in servers) for a in addons.ADDONS.values()])
@@ -515,7 +567,7 @@ class Wizard:
 
     def background(self) -> None:
         home = self.home
-        self.step(7, "Keep it running")
+        self.step(8, "Keep it running")
         has_tg = bool(os.environ.get("TELEGRAM_TOKEN"))
         messages = "messages" in self.done.addons or "messages" in home.mcp().get("mcpServers", {})
         self.say("Daimon can start at login and keep working in the background: reminders, routines and tasks run "
@@ -554,7 +606,7 @@ class Wizard:
         self.step(0, "Current settings")
         chat = os.environ.get("TELEGRAM_CHAT_ID")
         rows = [("Home folder", str(home.root)), ("Secrets file", str(home.secrets_file)),
-                ("Main model", home.worker("main").model),
+                ("Main model", home.worker("main").model), ("Knowledge", str(home.knowledge)),
                 ("API keys", ", ".join(f"{p.env} ({masked(os.environ[p.env])})" for p in PROVIDERS.values()
                                        if p.env and os.environ.get(p.env)) or "none"),
                 ("Telegram", ("set up" + (f", chat {chat}" if chat else ", no chat id yet"))
@@ -578,6 +630,7 @@ class Wizard:
         home, d = self.home, self.done
         rows = [("Home folder", str(home.root)), ("Secrets file", str(home.secrets_file)),
                 ("Main model", d.model or home.worker("main").model),
+                ("Knowledge", d.knowledge or str(home.knowledge)),
                 ("Telegram", d.telegram or "not set up"),
                 ("Claude Code", "ready" if d.claude else "not installed (optional)"),
                 ("Add-ons", ", ".join(addons.ADDONS[k].title for k in d.addons) or "none"),

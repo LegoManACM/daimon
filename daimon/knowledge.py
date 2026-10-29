@@ -5,7 +5,9 @@ description, tags, timestamp and custom fields are optional), linked with ordina
 optional index.md entry points and a log.md history. We add two custom fields: `updated` and `sources`
 (where facts came from, e.g. "user", "email:...", "sms").
 
-The files are the source of truth and live in the agent's git repo. The index (.cache/kg.sqlite) holds
+The files are the source of truth. They live in knowledge/ in the agent's git repo, or in any folder set as
+`knowledge.folder` in config.yaml, so several agents can share one; there, changes are committed when that
+folder is a git repo of its own. The index (.cache/kg.sqlite, per agent) holds
 full-text search, the link graph and optional embeddings, refreshed incrementally from file mtimes. Delete it
 any time.
 """
@@ -20,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .gate import Tool
-from .home import Home, join_frontmatter, split_frontmatter
+from .home import Home, git, git_commit, join_frontmatter, split_frontmatter
 from .schedule import now
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+\.md)(?:#[^)]*)?\)")
@@ -33,7 +35,7 @@ SKIP_CONTEXT = {"index", "log"}
 class Knowledge:
     def __init__(self, home: Home):
         self.home = home
-        self.root = home.root / "knowledge"
+        self.root = home.knowledge
         self._lock = asyncio.Lock()  # one index refresh at a time (workers search concurrently)
 
     # ---- index ---------------------------------------------------------------------------------------
@@ -224,8 +226,25 @@ class Knowledge:
         lines.append(f"- {now():%Y-%m-%d %H:%M} {'updated' if old else 'created'} [{rel}]({rel}): {reason}"
                      + (f" (source: {source})" if source else ""))
         log.write_text("\n".join(lines[:2] + lines[2:][-500:]) + "\n", encoding="utf-8")
-        ref = self.home.commit(f"knowledge: {reason}", [f"knowledge/{rel}", "knowledge/log.md"])
+        ref = self.commit(f"knowledge: {reason}", [rel, "log.md"])
         return f"Saved knowledge/{rel}" + (f" (change {ref})" if ref else "")
+
+    def where(self) -> str:
+        return "knowledge/" if self.inside() is not None else str(self.root)
+
+    def inside(self) -> Path | None:
+        """The folder's path inside the agent's home, or None when it lives elsewhere."""
+        try:
+            return self.root.resolve().relative_to(self.home.root.resolve())
+        except ValueError:
+            return None
+
+    def commit(self, message: str, files: list[str]) -> str | None:
+        if (inside := self.inside()) is not None:
+            return self.home.commit(message, [(inside / f).as_posix() for f in files])
+        if git(self.root, "rev-parse", "--is-inside-work-tree").stdout.strip() == "true":
+            return git_commit(self.root, message, files)
+        return None  # a plain folder: no history to add to
 
 
 def cosine(a: list[float], b: list[float]) -> float:

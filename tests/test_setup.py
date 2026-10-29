@@ -262,7 +262,7 @@ def test_wizard_minimal(tmp_path, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
     monkeypatch.setattr(wizard, "fetch_models", lambda p, key: [Model("anthropic/claude-opus-5-5")])
-    ask = Scripted(str(tmp_path / "home"), "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "no", [])
+    ask = Scripted(str(tmp_path / "home"), "home", "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "no", [])
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers
     h = Home(tmp_path / "home")
@@ -284,7 +284,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: "/bin/claude")
     monkeypatch.setattr(wizard.service, "install", lambda h, **kw: installed.update(kw) or ["daimon: somewhere"])
-    ask = Scripted(str(home.root), "keep", "ollama", "ollama_chat/test-model", "yes", "123:abc", [], True, False)
+    ask = Scripted(str(home.root), "keep", "home", "ollama", "ollama_chat/test-model", "yes", "123:abc", [], True, False)
     monkeypatch.setattr(wizard, "ollama_models", lambda: ["ollama_chat/test-model"])
     assert make_wizard(ask).run() == 0 and not ask.answers
     text = home.secrets_file.read_text(encoding="utf-8")
@@ -296,7 +296,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
 def test_wizard_model_retry_then_keep(home, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "AuthenticationError: bad key")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(home.root), "keep", "anthropic", "", "skip", "anthropic/claude-haiku-5-5", "keep", "no", [])
+    ask = Scripted(str(home.root), "keep", "home", "anthropic", "", "skip", "anthropic/claude-haiku-5-5", "keep", "no", [])
     assert make_wizard(ask).run() == 0
     assert home.worker("main").model == "anthropic/claude-haiku-5-5"
 
@@ -347,7 +347,7 @@ def test_wizard_key_rejected_then_pasted_again_and_searched(home, monkeypatch, c
     monkeypatch.setattr(wizard, "fetch_models", fetch)
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(home.root), "keep", "openrouter", "sk-or-bad", "show", "sk-or-good",
+    ask = Scripted(str(home.root), "keep", "home", "openrouter", "sk-or-bad", "show", "sk-or-good",
                    "?search", "special", "openrouter/z/special", "no", [])
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers
@@ -372,3 +372,35 @@ def test_config_one_section_and_menu(home, monkeypatch, clean_env):
     w = make_wizard(ask)
     assert w.configure(home) == 0 and not ask.answers
     assert "ANTHROPIC_API_KEY (sk-ant…6789)" in w.out.file.getvalue()
+
+
+def test_knowledge_folder_elsewhere(home, tmp_path, monkeypatch, clean_env):
+    shared = tmp_path / "vault"
+    (shared / "people").mkdir(parents=True)
+    (shared / "people" / "sam.md").write_text("---\ntype: person\n---\nSam likes climbing.\n", encoding="utf-8")
+    ask = Scripted("other", str(shared))
+    w = make_wizard(ask)
+    assert w.configure(home, "knowledge") == 0 and not ask.answers
+    assert home.knowledge == shared.resolve() and "folder:" in home.read("config.yaml")
+    assert "1 note there now" in w.out.file.getvalue() and "isn't a git repo" in w.out.file.getvalue()
+    from daimon.knowledge import Knowledge
+    kb = Knowledge(home)
+    assert kb.where() == str(shared.resolve()) and kb.count() == 1
+    assert kb.write("people/alex.md", {"type": "person"}, "Alex.", "met Alex").startswith("Saved knowledge/people/alex.md")
+    assert (shared / "people" / "alex.md").exists() and not (home.root / "knowledge" / "people" / "alex.md").exists()
+    ask = Scripted("home")
+    make_wizard(ask).configure(home, "knowledge")
+    assert home.knowledge == home.root / "knowledge"
+
+
+def test_knowledge_folder_commits_in_its_own_repo(home, tmp_path):
+    shared = tmp_path / "notes"
+    shared.mkdir()
+    import subprocess as sp
+    sp.run(["git", "init", "-q"], cwd=shared, check=True)
+    home.set_knowledge_folder(str(shared))
+    from daimon.knowledge import Knowledge
+    out = Knowledge(home).write("topics/x.md", {"type": "topic"}, "X.", "note x")
+    assert "(change " in out
+    log = sp.run(["git", "log", "--format=%s"], cwd=shared, capture_output=True, text=True).stdout
+    assert "knowledge: note x" in log

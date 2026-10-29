@@ -45,6 +45,8 @@ harnesses:
   #   command: [gemini, --yolo, -p, "{prompt}"]
 
 knowledge:
+  folder: knowledge         # where the notes live: a folder in here, or any path (~/notes, an Obsidian vault...)
+                            #   so several agents can share one; changes are committed if it's a git repo
   embeddings: none          # or a LiteLLM embedding model, e.g. ollama/qwen3-embedding:0.6b,
                             # openai/text-embedding-3-small (adds meaning-based search to keyword search)
   retrieve_for_main: true   # look up relevant notes for every message to the main agent

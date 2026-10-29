@@ -100,7 +100,7 @@ class Runner:
             f"- MEMORY.md: {len(memory)} of {cfg.get('memory_max_chars', 6000)} chars",
             f"- Usable models: {'; '.join(usable) or 'none'}",
             f"- Listed but not usable yet: {'; '.join(unusable) or 'none'}",
-            f"- Knowledge: {self.kb.count()} notes in knowledge/ (kg_search, kg_read, kg_write)",
+            f"- Knowledge: {self.kb.count()} notes in {self.kb.where()} (kg_search, kg_read, kg_write)",
             f"- Workers: {', '.join(workers) or 'none yet'}",
             f"- Harnesses (external agents; their models run on their own account, never via models.yaml): "
             f"{'; '.join(harness_list(cfg))}",

@@ -26,6 +26,22 @@ def resolve_home(flag: str | None = None) -> Path:
     return Path(flag or os.environ.get("DAIMON_HOME") or Path.home() / ".daimon").expanduser().resolve()
 
 
+def git(folder: Path, *args: str) -> subprocess.CompletedProcess:
+    # stdin=DEVNULL: on Windows, a child inheriting a stdin handle that another thread is blocked reading
+    # (chat input from a pipe) waits until that read finishes.
+    return subprocess.run(["git", *GIT_ID, *args], cwd=folder, capture_output=True, text=True, encoding="utf-8",
+                          stdin=subprocess.DEVNULL)
+
+
+def git_commit(folder: Path, message: str, paths: list[str] | None = None) -> str | None:
+    """Commit `paths` (or everything) in the repo at `folder`. The short hash, or None if nothing changed."""
+    git(folder, "add", "-A", "--", *(paths or ["."]))
+    if git(folder, "diff", "--cached", "--quiet").returncode == 0:
+        return None
+    git(folder, "commit", "-q", "-m", message)
+    return git(folder, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?(.*)$", text, re.S)
     if not m:
@@ -151,6 +167,25 @@ class Home:
     def config(self) -> dict[str, Any]:
         return self.read_yaml("config.yaml")
 
+    @property
+    def knowledge(self) -> Path:
+        """The knowledge folder: `knowledge.folder` in config.yaml (inside the home, or any path), default knowledge/."""
+        folder = str(self.config().get("knowledge", {}).get("folder") or "knowledge")
+        p = Path(folder).expanduser()
+        return p if p.is_absolute() else self.root / p
+
+    def set_knowledge_folder(self, folder: str) -> None:
+        """Point `knowledge.folder` at `folder` (text edit, so config.yaml keeps its comments)."""
+        text = self.read("config.yaml")
+        line = f"  folder: {json.dumps(folder.replace(chr(92), '/'))}"
+        if re.search(r"^  folder:.*$", text, re.M):
+            text = re.sub(r"^  folder:.*$", lambda _: line, text, count=1, flags=re.M)
+        elif re.search(r"^knowledge:\s*$", text, re.M):
+            text = re.sub(r"^knowledge:\s*$", lambda _: f"knowledge:\n{line}", text, count=1, flags=re.M)
+        else:
+            text = text.rstrip("\n") + f"\n\nknowledge:\n{line}\n"
+        self.write("config.yaml", text)
+
     def models(self) -> dict[str, Any]:
         return self.read_yaml("models.yaml")
 
@@ -222,18 +257,11 @@ class Home:
 
     # ---- git ---------------------------------------------------------------------------------------
     def _git(self, *args: str) -> subprocess.CompletedProcess:
-        # stdin=DEVNULL: on Windows, a child inheriting a stdin handle that another thread is blocked reading
-        # (chat input from a pipe) waits until that read finishes.
-        return subprocess.run(["git", *GIT_ID, *args], cwd=self.root, capture_output=True, text=True,
-                              encoding="utf-8", stdin=subprocess.DEVNULL)
+        return git(self.root, *args)
 
     def commit(self, message: str, paths: list[str] | None = None) -> str | None:
         """Commit changes (to `paths`, or everything). Returns the short hash, or None if nothing changed."""
-        self._git("add", "-A", "--", *(paths or ["."]))
-        if self._git("diff", "--cached", "--quiet").returncode == 0:
-            return None
-        self._git("commit", "-q", "-m", message)
-        return self._git("rev-parse", "--short", "HEAD").stdout.strip()
+        return git_commit(self.root, message, paths)
 
     def commit_user_edits(self) -> str | None:
         """Changes made outside the agent (you editing files) get their own commit, so undo stays clean."""

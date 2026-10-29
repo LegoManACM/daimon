@@ -279,7 +279,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
     p_config = sub.add_parser("config", help="change one part of the setup (no part: pick from a menu)")
-    p_config.add_argument("section", nargs="?", choices=["model", "key", "telegram", "claude", "addons",
+    p_config.add_argument("section", nargs="?", choices=["model", "key", "knowledge", "telegram", "claude", "addons",
                                                          "background", "show"])
     p_init = sub.add_parser("init", help="create the agent's home folder")
     p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")

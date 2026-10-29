@@ -38,16 +38,17 @@ You need:
 `daimon setup` walks you through it a step at a time:
 
 1. **Home folder**, where the agent lives (default `~/.daimon`).
-2. **Model.** Pick a provider (Anthropic, OpenAI, OpenRouter, Google Gemini or Ollama) and paste its key. The key
+2. **Knowledge**, where its notes live: its own folder (the default), or one you already have.
+3. **Model.** Pick a provider (Anthropic, OpenAI, OpenRouter, Google Gemini or Ollama) and paste its key. The key
    shows as dots while you paste, then setup shows its first and last few characters and checks it with the
    provider. Then pick the main model from the provider's own current list: type to filter what's shown, or search
    all of them (OpenRouter has hundreds; try `sonnet`, `gpt` or `free`).
-3. **Telegram** (optional). Make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message
+4. **Telegram** (optional). Make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message
    the bot once; setup picks up your chat id itself.
-4. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
-5. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes and [text messages](messaging/README.md)
+5. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
+6. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes and [text messages](messaging/README.md)
    through Google Messages. Setup installs them, connects them to the agent and runs their sign-in.
-6. **Background.** Start Daimon at login so it keeps running after you close the terminal.
+7. **Background.** Start Daimon at login so it keeps running after you close the terminal.
 
 Keys and tokens go in `~/.daimon-secrets.env`, outside the agent's folder.
 
@@ -59,6 +60,7 @@ the part:
 ```bash
 daimon config model        # provider and main model
 daimon config key          # replace an API key
+daimon config knowledge    # where the notes live
 daimon config telegram
 daimon config addons       # Canvas, text messages
 daimon config background   # start at login
@@ -114,6 +116,18 @@ messages service when that add-on is connected. Logs go to `~/.daimon/.cache/dai
 | Windows | Task Scheduler tasks "Daimon" and "Daimon Messages" at logon, in a hidden window (or the Startup folder if Task Scheduler refuses) |
 | macOS | LaunchAgents `com.daimon.agent` and `com.daimon.messages` in `~/Library/LaunchAgents` |
 | Linux | systemd user units `daimon.service` and `daimon-messages.service`. Run `loginctl enable-linger` to keep them running while you're logged out |
+
+## Knowledge
+
+What the agent learns (people, projects, preferences, plans) goes into markdown notes with YAML frontmatter, linked
+to each other with ordinary markdown links. Notes relevant to each message are retrieved into the prompt, and the
+agent searches, reads and writes them with its `kg_*` tools.
+
+By default they live in `knowledge/` inside the agent's folder. Point `knowledge.folder` in config.yaml (or
+`daimon config knowledge`) at any other folder to use notes you already have, like an Obsidian vault, or to
+share one knowledge base between several agents so none of them starts from scratch. Each agent keeps its own
+search index, built from the files. Inside the agent's folder its edits are commits you can undo; elsewhere they're
+committed if that folder is a git repo of its own.
 
 ## Feeding it
 
@@ -184,7 +198,7 @@ turn it off with `enabled: false`.
 
 | Where | What |
 |---|---|
-| `~/.daimon/` | the agent: SELF.md, POLICY.md, MEMORY.md, workers/, routines/, knowledge/, mcp.json, models.yaml, config.yaml (a git repo) |
+| `~/.daimon/` | the agent: SELF.md, POLICY.md, MEMORY.md, workers/, routines/, knowledge/ (unless it lives elsewhere), mcp.json, models.yaml, config.yaml (a git repo) |
 | `~/.daimon-secrets.env` | API keys and tokens, never committed |
 | `~/.daimon-canvas/`, `~/.daimon-messages/` | the add-ons' own folders |
 
