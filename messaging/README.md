@@ -90,6 +90,54 @@ snippets, not dumps.
 
 Lookups read `messages.db` directly, so they work while the service is down. Sending and live status need it running.
 
+## Watchers
+
+Watchers read new texts as they arrive and wake the agent when one matches what it's told to look for. The agent
+sets them up through the MCP tools, either because you asked ("tell me when Sam says when they land") or on its
+own when it thinks one would help (it tells you when it does). A watcher never replies or acts by itself. When one
+fires, it drops a file in the agent's inbox, and the agent decides what to do next, behind its usual consent rules.
+
+| tool | what it does |
+|---|---|
+| `set_watcher(name, look_for, chats, senders, any_words, all_words, regex, preset, judge, fields, action, then, once, expires, ...)` | create or change one (only the arguments given change) |
+| `list_watchers()` / `get_watcher(name)` | what's set up, whether it's active, how often it fired |
+| `test_watcher(name, since, chat)` | try it on stored texts without delivering anything |
+| `watcher_hits(name, since)` | what fired lately |
+| `remove_watcher(name)` | delete one (`set_watcher(name, enabled=False)` pauses it) |
+| `watch_settings(model, models, params, quiet_seconds, max_checks_per_hour)` | which model reads texts, and how often |
+
+A watcher is a file in `watchers/` that you can edit too:
+
+```markdown
+---
+description: Sam's flight landing time
+match: {chats: [Sam], any: [land*, flight, arriv*]}   # cheap filter; the model does the judging
+fields: {time: "ISO 8601 local datetime"}            # or a list: [time, place]
+action: wake          # wake the agent now | inbox (for the curator) | log (just keep the hit)
+then: Remind me 30 minutes before Sam lands to leave for the airport.
+once: true
+expires: 2026-11-15
+---
+Fire when Sam says when their flight lands, or that it has landed.
+```
+
+Texts that pass the match wait until their chat has been quiet for `quiet_seconds`, so a burst is read once. Then
+the model reads them, with the earlier texts of the same conversation as context. `judge: false` skips the model
+and fires on the match alone, right away. Match presets: `planning`, `changes` (cancel, reschedule, late),
+`question`. Two starter watchers come with it: `plans` (new plans and promises) and `changes` (cancellations and
+reschedules). Edit or remove them like any other.
+
+**Which model reads your texts** is set in `watch.yaml` (or by asking the agent; `watch_settings` asks you first).
+It can be any LiteLLM model. A local one (`ollama_chat/qwen3.5:9b`) keeps texts on this computer, and a cloud one
+(`anthropic/claude-haiku-5-5`, `openai/...`, `openrouter/...`) sends them to that provider. Keys come from
+`~/.daimon-secrets.env`. A watcher can pick its own model only from `models:` in watch.yaml. With no model set,
+only `judge: false` watchers run.
+
+A hit's inbox file carries it twice: as text for the agent to read, and as an event in the frontmatter
+(`event: messages.watch_hit`, `data:` with watcher, chat, from, summary, message_ids and the extracted fields
+at the top level), so rules on the agent's side can act on it without a model. Hits are also kept in messages.db
+(`watch_hits`).
+
 ## CLI
 
 ```
@@ -112,6 +160,8 @@ daimon-messages build [--download]     build the sidecar from source now (needs 
 config.yaml     settings (below); restart the service after editing
 messages.db     chats, messages (+ FTS index), phone contacts, cursors
 session.json    the pairing keys; unpairing deletes them
+watchers/       one file per watcher (above)
+watch.yaml      which model reads texts for watchers, and how often
 control.json    port + token of the running service (127.0.0.1 only)
 bin/            the sidecar (downloaded or built)
 logs/service.log

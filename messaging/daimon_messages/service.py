@@ -11,6 +11,7 @@ The control API is plain JSON over HTTP for the few things only the live link ca
   GET  /status
   POST /pair {method: qr|google, cookies}   POST /cancel   POST /unpair {wipe}
   POST /backfill {days}                     POST /send {chat | to, text}   POST /contacts
+  POST /watch/test {name, since, chat}      (see watch.py: watchers run here, over each new message)
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from .config import Home
 from .filters import blocked
 from .sidecar import Sidecar, backfill_since, find_go
 from .store import Store, utcnow
+from .watch import Engine, Folder, seed
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +51,9 @@ class Service:
         self._contacts_at = 0.0
         self._tasks: list[asyncio.Task] = []
         self._http: ThreadingHTTPServer | None = None
+        self.watchers = Folder(home.watchers)
+        seed(self.watchers)
+        self.watch = Engine(self.watchers, home.watch_settings, self.store, self.cfg.tz())
         self.loop: asyncio.AbstractEventLoop | None = None
 
     # ---- lifecycle ----
@@ -58,6 +63,7 @@ class Service:
         if self.home.session.exists():
             self.sidecar.start()
         self._tasks.append(asyncio.create_task(self._upkeep()))
+        self._tasks.append(asyncio.create_task(self.watch.run()))
         if control:
             self._serve_control()
 
@@ -212,6 +218,20 @@ class Service:
         log.info("Contacts refreshed: %d", n)
         return {"ok": True, "count": n}
 
+    async def test_watcher(self, body: dict) -> tuple[int, dict]:
+        w = self.watchers.get(str(body.get("name") or ""))
+        if w is None:
+            return 404, {"error": f"No watcher named {body.get('name')!r}."}
+        chat_id = ""
+        if ref := str(body.get("chat") or ""):
+            chat, _ = self.store.resolve_chat(ref)
+            if chat is None:
+                return 400, {"error": f"No single chat matches {ref!r}."}
+            chat_id = chat["id"]
+        since = str(body.get("since") or "") or (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        result = await self.watch.test(w, since, chat_id, int(body.get("max_checks") or 6))
+        return 200, result | {"ok": True}
+
     def status(self) -> dict:
         sc = self.sidecar
         counts = self.store.counts()
@@ -221,7 +241,8 @@ class Service:
             "paired_at": self.store.kv_get("paired_at"), "qr": sc.qr, "emoji": sc.emoji, "pair_error": sc.pair_error,
             "messages": counts["n"], "chats": counts["chats"], "first": counts["first"], "last": counts["last"],
             "received": self.received, "dropped": self.dropped, "backfill": self.backfill,
-            "allow_send": self.cfg.allow_send,
+            "allow_send": self.cfg.allow_send, "watch": self.watch.stats | {
+                "model": self.watch.settings().model, "waiting_chats": len(self.watch.pending)},
         }
 
     # ---- control API ----
@@ -247,6 +268,8 @@ class Service:
             result = await self.send_text(str(body.get("text") or ""), str(body.get("chat") or ""),
                                           str(body.get("to") or ""))
             return (200 if result["ok"] else 400), result
+        if path == "/watch/test":
+            return await self.test_watcher(body)
         if path == "/contacts":
             result = await self.refresh_contacts()
             return (200 if result["ok"] else 400), result
@@ -272,7 +295,7 @@ class Service:
                     length = int(self.headers.get("Content-Length") or 0)
                     body = json.loads(self.rfile.read(length) or b"{}") if length else {}
                     fut = asyncio.run_coroutine_threadsafe(service.handle(method, self.path, body), service.loop)
-                    code, payload = fut.result(timeout=120)
+                    code, payload = fut.result(timeout=600)
                 except Exception as e:  # noqa: BLE001
                     log.exception("Control request failed")
                     code, payload = 500, {"error": str(e)}

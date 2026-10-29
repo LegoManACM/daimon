@@ -7,6 +7,8 @@ reads the message stream, only what the MCP tools hand it.
   messages.db     every stored message (SQLite + full-text index)
   session.json    the Google Messages pairing keys; unpairing deletes it
   control.json    where the running service listens (port + token), written at start
+  watchers/       one markdown file per watcher (see watch.py); the agent writes them through the MCP tools
+  watch.yaml      watcher settings: which model reads texts, how often (see watch.py)
   bin/            the sidecar, downloaded from the release (or built from sidecar/gmessages) on first use
   logs/
 """
@@ -87,6 +89,14 @@ class Home:
     @property
     def control(self) -> Path:
         return self.root / "control.json"
+
+    @property
+    def watchers(self) -> Path:
+        return self.root / "watchers"
+
+    @property
+    def watch_settings(self) -> Path:
+        return self.root / "watch.yaml"
 
     @property
     def bin(self) -> Path:

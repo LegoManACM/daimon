@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS kv(
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS watch_hits(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    watcher TEXT NOT NULL,
+    chat TEXT NOT NULL,
+    messages TEXT NOT NULL DEFAULT '[]',  -- message ids
+    summary TEXT NOT NULL DEFAULT '',
+    fields TEXT NOT NULL DEFAULT '{}',
+    action TEXT NOT NULL DEFAULT '',
+    delivered TEXT NOT NULL DEFAULT ''    -- the inbox file, "failed: ...", or '' (log only)
+);
+CREATE INDEX IF NOT EXISTS watch_hits_watcher ON watch_hits(watcher, ts);
 """
 
 
@@ -284,7 +296,7 @@ class Store:
     def wipe(self) -> None:
         """Every message, chat and contact: what "unpair --wipe" does."""
         with self._lock:
-            for table in ("messages", "chats", "contacts", "kv"):
+            for table in ("messages", "chats", "contacts", "kv", "watch_hits"):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
 
@@ -298,6 +310,32 @@ class Store:
 
     def ack(self, consumer: str, seq: int) -> None:
         self.kv_set(f"cursor:{consumer}", str(int(seq)))
+
+    def by_seq(self, seqs: list[int]) -> list[dict]:
+        if not seqs:
+            return []
+        marks = ",".join("?" * len(seqs))
+        return [dict(r) for r in self.query(f"SELECT * FROM messages WHERE seq IN ({marks}) ORDER BY ts, seq",
+                                            tuple(int(s) for s in seqs))]
+
+    # ---- watcher hits ----
+
+    def add_hit(self, watcher: str, chat: str, message_ids: list[str], summary: str, found: dict, action: str,
+                delivered: str) -> int:
+        cur = self.execute("INSERT INTO watch_hits(ts, watcher, chat, messages, summary, fields, action, delivered) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (utcnow(), watcher, chat, json.dumps(message_ids), summary,
+                            json.dumps(found, ensure_ascii=False), action, delivered))
+        return int(cur.lastrowid)
+
+    def hits(self, watcher: str = "", since: str = "", limit: int = 20) -> list[dict]:
+        rows = self.query("SELECT * FROM watch_hits WHERE (? = '' OR watcher = ?) AND (? = '' OR ts >= ?) "
+                          "ORDER BY id DESC LIMIT ?", (watcher, watcher, since, since, limit))
+        return [dict(r) | {"messages": json.loads(r["messages"]), "fields": json.loads(r["fields"])} for r in rows]
+
+    def hit_stats(self) -> dict[str, dict]:
+        rows = self.query("SELECT watcher, COUNT(*) AS n, MAX(ts) AS last FROM watch_hits GROUP BY watcher")
+        return {r["watcher"]: {"n": r["n"], "last": r["last"]} for r in rows}
 
     # ---- people ----
 
