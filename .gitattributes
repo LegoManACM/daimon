@@ -1,0 +1,2 @@
+# install.sh is piped into sh, so it must keep LF line endings on every checkout.
+*.sh text eol=lf

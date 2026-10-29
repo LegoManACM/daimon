@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        shell: bash
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . -e ./canvas -e ./messaging pytest
+      - name: Test
+        shell: bash
+        run: |
+          py=.venv/bin/python
+          [ -x "$py" ] || py=.venv/Scripts/python
+          "$py" -m pytest -q tests canvas/tests messaging/tests

@@ -1,0 +1,61 @@
+# Runtime settings. The agent may edit this file (with your OK unless self_edit is "free").
+
+# Who approves the agent's edits to its own files:
+#   policy: workers, skills, memory, SELF.md change freely; POLICY.md, mcp.json, models.yaml and
+#           config.yaml need your OK
+#   free:   everything changes freely (git history is the safety net)
+#   all:    every edit needs your OK
+self_edit: policy
+
+memory_max_chars: 6000      # MEMORY.md may not grow past this
+max_steps_per_turn: 30      # tool-call rounds per message before the agent stops and reports
+
+thread:
+  compact_at_tokens: 40000  # summarise older conversation once it grows past this
+  keep_recent_messages: 12  # always keep this many recent messages verbatim
+
+tool_result_max_chars: 20000
+
+limits:
+  max_concurrent_workers: 3 # or unlimited
+  harness:                  # per harness: runs on a subscription share your plan's limits
+    claude-code: { max_runs_per_day: 20 }
+
+# External agents a worker can run its tasks in (`harness: <name>` in the worker file). Built in:
+#   claude-code: Claude Code through the Claude Agent SDK, on your Claude subscription (auth: api_key to bill
+#                ANTHROPIC_API_KEY instead). Needs `claude` installed and logged in.
+# Add any other agent with a headless command line (driver: cli), or your own (driver: package.module:Class).
+harness:
+  workspaces: null          # where project/task workspaces go; default: a folder next to the home folder
+harnesses:
+  claude-code:
+    driver: claude-sdk
+    auth: subscription
+    # consent: {"Bash(*git push*)": auto}   # what it may do without asking, beyond its workspace
+  # Untested sketches; check each tool's current flags and output format before enabling.
+  # codex:
+  #   driver: cli
+  #   command: [codex, exec, --json, --full-auto, "{prompt}"]
+  #   resume: [codex, exec, resume, "{session}", --json, --full-auto, "{prompt}"]
+  #   output: jsonl
+  #   result: item.text
+  #   session: thread_id
+  # gemini:
+  #   driver: cli
+  #   command: [gemini, --yolo, -p, "{prompt}"]
+
+knowledge:
+  embeddings: none          # or a LiteLLM embedding model, e.g. ollama/qwen3-embedding:0.6b,
+                            # openai/text-embedding-3-small (adds meaning-based search to keyword search)
+  retrieve_for_main: true   # look up relevant notes for every message to the main agent
+  retrieval_max_chars: 6000 # how much retrieved knowledge goes into a prompt
+  curator: curator          # the worker that files inbox items into knowledge/
+
+# Where the agent reaches you besides `daimon chat`. Telegram: make a bot with @BotFather and put
+# TELEGRAM_TOKEN=... in the secrets file. Start `daimon run`, message the bot, and it tells you your chat id:
+# put that in the secrets file as TELEGRAM_CHAT_ID and restart. Only that chat is answered.
+channels:
+  telegram:
+    token: ${TELEGRAM_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+    events: [notify, error]  # background notices sent there, besides messages and approvals

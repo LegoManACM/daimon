@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the versions match the tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          for f in pyproject.toml canvas/pyproject.toml messaging/pyproject.toml; do
+            got=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$f")
+            if [ "$got" != "$want" ]; then
+              echo "::error file=$f::version is $got but the tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Test
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . -e ./canvas -e ./messaging pytest
+          .venv/bin/python -m pytest -q tests canvas/tests messaging/tests
+
+      - name: Build the wheels
+        run: |
+          for dir in . canvas messaging; do
+            (cd "$dir" && uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist")
+          done
+          v="${GITHUB_REF_NAME#v}"
+          for name in daimon daimon_canvas daimon_messages; do
+            test -f "dist/$name-$v-py3-none-any.whl" || { echo "::error::dist/$name-$v-py3-none-any.whl is missing"; exit 1; }
+          done
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: messaging/sidecar/gmessages/go.mod
+          cache-dependency-path: messaging/sidecar/gmessages/go.sum
+
+      - name: Build the Messages helper
+        working-directory: messaging/sidecar/gmessages
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for os in windows darwin linux; do
+            for arch in amd64 arm64; do
+              ext=""
+              [ "$os" = windows ] && ext=.exe
+              GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
+                -o "$GITHUB_WORKSPACE/dist/daimon-messages-sidecar-$os-$arch$ext" .
+            done
+          done
+
+      - name: Add the installers and checksums
+        run: |
+          cp install.ps1 install.sh dist/
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Daimon $GITHUB_REF_NAME" --generate-notes --verify-tag $pre

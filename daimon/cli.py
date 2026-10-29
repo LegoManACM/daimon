@@ -1,0 +1,334 @@
+"""`daimon` command line: setup, init, chat, run, ask, inbox, service."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from dataclasses import dataclass
+
+from . import inbox
+from .agent import Agent
+from .gateway import Gateway, Log, Message, OnMessage, Prompt, configured
+from .home import Home, resolve_home
+from .tasks import OPEN, summary
+
+DIM, BOLD, YELLOW, CYAN, RED, GREEN, RESET = ("\033[2m", "\033[1m", "\033[33m", "\033[36m", "\033[31m", "\033[32m",
+                                              "\033[0m")
+
+
+@dataclass
+class Pending:
+    prompt: Prompt
+    answer: asyncio.Future
+
+
+class Terminal:
+    """The terminal channel. While chatting, approvals queue up and the next line you type answers the oldest one,
+    so background workers never fight you for the prompt. In one-shot mode it just asks inline."""
+
+    name = "terminal"
+
+    def __init__(self, interactive: bool):
+        self.interactive = interactive
+        self.pending: list[Pending] = []
+        self.on_message: OnMessage | None = None
+
+    async def connect(self, on_message: OnMessage) -> None:
+        self.on_message = on_message
+
+    async def close(self) -> None:
+        pass
+
+    async def prompt(self, prompt: Prompt) -> str:
+        if not self.interactive:
+            self._show(prompt)
+            return await asyncio.to_thread(input, f"{YELLOW}> {RESET}")
+        p = Pending(prompt, asyncio.get_running_loop().create_future())
+        self.pending.append(p)
+        if len(self.pending) == 1:
+            self._show(prompt)
+        try:
+            return await p.answer
+        except asyncio.CancelledError:  # answered on another channel
+            if p in self.pending:
+                first = self.pending[0] is p
+                self.pending.remove(p)
+                print(f"{DIM}({prompt.title}: answered elsewhere){RESET}")
+                if first and self.pending:
+                    self._show(self.pending[0].prompt)
+            raise
+
+    @staticmethod
+    def _show(p: Prompt) -> None:
+        print(f"\n{YELLOW}{BOLD}Approve?{RESET}{YELLOW} {p.title}{RESET}{DIM}  ({p.who}){RESET}")
+        for k, v in p.details.items():
+            print(f"  {DIM}{k}:{RESET} " + v.replace("\n", "\n    "))
+        options = " / ".join(f"[{v}]{label[len(v):].lower()}" if label.lower().startswith(v) else f"[{v}] {label}"
+                             for v, label in p.options)
+        print(f"{YELLOW}{options}" + (" / or type a reply" if p.free_text else "") + RESET)
+
+    def answer_oldest(self, line: str) -> None:
+        p = self.pending.pop(0)
+        p.answer.set_result(line)
+        if self.pending:
+            self._show(self.pending[0].prompt)
+
+    def event(self, kind: str, text: str) -> None:
+        icon = {"tool": "→", "edit": "✎", "notify": "•", "compact": "≡", "thinking": "…", "task": "▸",
+                "routine": "⟳", "error": "!"}.get(kind, "·")
+        color = {"edit": CYAN, "error": RED, "task": GREEN, "routine": GREEN}.get(kind, DIM)
+        print(f"{color}{icon} {text}{RESET}")
+
+    async def send(self, text: str) -> None:
+        if text.startswith("Model call failed:"):
+            print(f"{RED}{text}{RESET}")
+        else:
+            print(f"\n{BOLD}agent>{RESET} {text}")
+
+
+def open_home(args: argparse.Namespace) -> Home:
+    home = Home(resolve_home(args.home))
+    if not home.exists():
+        sys.exit(f"No agent at {home.root}. Run `daimon setup` first (or `daimon init` for just the files).")
+    home.load_secrets()
+    return home
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    home = Home(resolve_home(args.home))
+    created = home.init(model=args.model)
+    print(f"Agent home: {home.root}")
+    for c in created:
+        print(f"  created {c}")
+    print(f"Secrets file (never committed): {home.secrets_file}")
+    print(f"Main model: {home.worker('main').model}. Change it in workers/main.md, or ask the agent.")
+
+
+def cmd_service(args: argparse.Namespace) -> None:
+    from .setup import service
+    home = open_home(args)
+    if args.action == "install":
+        if not configured(home):
+            sys.exit(f"Running in the background needs a channel to reach you on: put TELEGRAM_TOKEN=... in "
+                     f"{home.secrets_file} (or run `daimon setup`) first.")
+        messages = args.messages if args.messages is not None else "messages" in home.mcp().get("mcpServers", {})
+        lines = service.install(home, messages=messages, start_now=args.start)
+        lines.append("While it runs, `daimon chat` can't open this agent: talk to it on Telegram, or "
+                     "`daimon service stop` first.")
+    else:
+        lines = getattr(service, args.action)(home)
+    print("\n".join(lines) or "Nothing installed. `daimon service install` sets it up.")
+
+
+def hold_lock(home: Home):
+    """Only one running agent per home: two would double-run tasks and fight over the Telegram bot."""
+    home.cache.mkdir(exist_ok=True)
+    f = open(home.cache / "agent.lock", "a+")
+    try:
+        f.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(f"The agent at {home.root} is already running (`daimon chat` or `daimon run`). Only one can run at a time.")
+    return f
+
+
+async def start(home: Home, channels: list) -> tuple[Agent, Gateway]:
+    gateway = Gateway(channels)
+    agent = Agent(home, gateway)
+    await agent.start()
+    for problem in await gateway.start(agent):
+        gateway.event("error", f"channel {problem}")
+    return agent, gateway
+
+
+async def read_lines():
+    """Yield lines from the terminal. prompt_toolkit keeps the prompt intact while background output prints."""
+    if sys.stdin.isatty():
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.patch_stdout import patch_stdout
+        session = PromptSession()
+        with patch_stdout():
+            while True:
+                try:
+                    yield await session.prompt_async("you> ")
+                except (EOFError, KeyboardInterrupt):
+                    return
+    else:
+        while True:
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if not line:
+                return
+            yield line.rstrip("\n")
+
+
+async def chat(home: Home) -> None:
+    lock = hold_lock(home)
+    terminal = Terminal(interactive=True)
+    agent, gateway = await start(home, [terminal, *configured(home)])
+    others = ", ".join(c.name for c in gateway.channels if c is not terminal)
+    print(f"{DIM}Your agent is running ({home.root}). It keeps working in the background while this is open"
+          f"{f' and answers on {others}' if others else ''}. /help for commands.{RESET}")
+    replies: set[asyncio.Task] = set()
+    try:
+        async for line in read_lines():
+            text = line.strip()
+            if terminal.pending:
+                terminal.answer_oldest(text)
+            elif not text:
+                continue
+            elif text.startswith("/"):
+                if not await command(text, agent):
+                    break
+            else:
+                t = asyncio.create_task(terminal.on_message(Message(text, terminal.name)))
+                replies.add(t)
+                t.add_done_callback(replies.discard)
+    finally:
+        await gateway.close()
+        await agent.stop()
+        lock.close()
+
+
+async def run(home: Home) -> None:
+    """Headless: the agent works in the background and talks to you through its channels."""
+    lock = hold_lock(home)
+    channels = configured(home)
+    if not channels:
+        sys.exit(f"No channel to reach you on, so approvals would have nowhere to go. Put TELEGRAM_TOKEN=... (from "
+                 f"@BotFather) in {home.secrets_file} and run `daimon run` again.")
+    agent, gateway = await start(home, [Log(), *channels])
+    try:
+        if len(gateway.channels) == 1:
+            sys.exit("No channel connected (see the errors above).")
+        Log.print(f"Agent running ({home.root}) on {', '.join(c.name for c in gateway.channels[1:])}. Ctrl+C stops it.")
+        await asyncio.Event().wait()
+    finally:
+        await gateway.close()
+        await agent.stop()
+        lock.close()
+
+
+async def ask(home: Home, message: str) -> None:
+    terminal = Terminal(interactive=False)
+    gateway = Gateway([terminal])
+    agent = Agent(home, gateway)
+    await agent.start(scheduler=False)
+    await gateway.start(agent)
+    try:
+        await terminal.on_message(Message(message, terminal.name))
+    finally:
+        await agent.stop()
+
+
+HELP = """/help       this list
+/tasks      open tasks (/tasks all for everything)
+/kg QUERY   search the knowledge graph
+/tools      MCP servers and tool consent levels
+/history    recent changes to the agent's files
+/cost       spend today
+/compact    fold older conversation into the summary now
+/clear      start a fresh conversation (old one is archived)
+/exit       quit (background work stops until you start it again)"""
+
+
+async def command(text: str, agent: Agent) -> bool:
+    parts = text.split()
+    cmd = parts[0].lower()
+    if cmd in ("/exit", "/quit"):
+        return False
+    if cmd == "/help":
+        print(HELP)
+    elif cmd == "/tasks":
+        print(summary(agent.tasks.all(None if parts[1:2] == ["all"] else OPEN)))
+    elif cmd == "/kg":
+        query = text[len(parts[0]):].strip()
+        if not query:
+            print(f"{agent.runner.kb.count()} notes. /kg QUERY to search.")
+        for h in await agent.runner.kb.search(query) if query else []:
+            print(f"  {h['path']} [{h['type']}] {h['title']}: {h['description'] or h['snippet'][:80]}")
+    elif cmd == "/tools":
+        await agent.hub.sync()
+        for line in agent.hub.status() or ["No MCP servers configured."]:
+            print(line)
+        for s in agent.hub.servers.values():
+            for t in s.tools:
+                print(f"  {t.name} [{agent.hub.level(s.name, t)}]")
+    elif cmd == "/history":
+        print(agent.home.history() or "No history.")
+    elif cmd == "/cost":
+        print(f"${agent.runner.spend_today():.4f} today")
+    elif cmd == "/compact":
+        done = await agent.runner.maybe_compact(agent.thread, force=True)
+        print("Compacted." if done else "Nothing to compact yet.")
+    elif cmd == "/clear":
+        agent.thread.clear()
+        print("Started a fresh conversation.")
+    else:
+        print(f"Unknown command {cmd}. /help lists them.")
+    return True
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="daimon", description="Daimon")
+    parser.add_argument("--home", help="agent home folder (default: $DAIMON_HOME or ~/.daimon)")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
+    p_init = sub.add_parser("init", help="create the agent's home folder")
+    p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")
+    sub.add_parser("chat", help="run the agent and chat with it (plus any channels, like Telegram)")
+    sub.add_parser("run", help="run the agent headless; you reach it through its channels (Telegram)")
+    p_ask = sub.add_parser("ask", help="send one message and print the reply (no background work)")
+    p_ask.add_argument("message")
+    p_inbox = sub.add_parser("inbox", help="add an item to the agent's inbox")
+    p_inbox.add_argument("action", choices=["add"])
+    p_inbox.add_argument("text", help="the item's content ('-' reads stdin)")
+    p_inbox.add_argument("--source", help="where it came from: sms, email, calendar, ...")
+    p_inbox.add_argument("--from", dest="sender", help="who it's from")
+    p_inbox.add_argument("--title")
+    p_inbox.add_argument("--for", dest="target", choices=["main"],
+                         help="send straight to the main agent instead of the curator")
+    p_service = sub.add_parser("service", help="run the agent in the background, started at login")
+    p_service.add_argument("action", choices=["install", "uninstall", "status", "start", "stop"])
+    p_service.add_argument("--messages", action=argparse.BooleanOptionalAction, default=None,
+                           help="also run `daimon-messages run` (install only; default: if mcp.json has it)")
+    p_service.add_argument("--start", action="store_true", help="start it now too (install only)")
+    args = parser.parse_args()
+
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+    if args.cmd is None:
+        root = resolve_home(args.home)
+        if not Home(root).exists():
+            print(f"No agent at {root} yet. Run `daimon setup` to make one, step by step.")
+        else:
+            parser.print_help()
+    elif args.cmd == "setup":
+        from .setup.wizard import run as setup
+        sys.exit(setup(args.home))
+    elif args.cmd == "service":
+        cmd_service(args)
+    elif args.cmd == "init":
+        cmd_init(args)
+    elif args.cmd == "chat":
+        asyncio.run(chat(open_home(args)))
+    elif args.cmd == "run":
+        try:
+            asyncio.run(run(open_home(args)))
+        except KeyboardInterrupt:
+            print("Stopped.")
+    elif args.cmd == "ask":
+        asyncio.run(ask(open_home(args), args.message))
+    elif args.cmd == "inbox":
+        text = sys.stdin.read() if args.text == "-" else args.text
+        path = inbox.drop(open_home(args), text, source=args.source, **{"from": args.sender},
+                          title=args.title, **{"for": args.target})
+        print(f"Added {path.name}. The running agent picks it up within a minute.")
+
+
+if __name__ == "__main__":
+    main()

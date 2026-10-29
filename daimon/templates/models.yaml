@@ -1,0 +1,21 @@
+# Models the agent may use. Ids are LiteLLM model names (provider/model).
+# Workers can only use models listed here. Models with `approval: ask` need your OK each time they're
+# assigned. Optional `params` are passed to the provider (api_base, api_key: ${SECRET_NAME}, ...).
+# Optional `price: {in: 1.0, out: 5.0}` (USD per million tokens) is used for spend tracking when LiteLLM
+# doesn't know the model's price.
+
+default_for_new_workers: anthropic/claude-sonnet-5-5
+
+models:
+  - id: anthropic/claude-haiku-5-5
+    tier: cheap
+    good_for: [triage, curation, summaries]
+  - id: anthropic/claude-sonnet-5-5
+    tier: standard
+    good_for: [agentic, scheduling, general]
+  - id: openai/gpt-5
+    tier: standard
+    good_for: [coding, general]
+  - id: ollama_chat/qwen3.5:9b
+    tier: free
+    good_for: [general]
