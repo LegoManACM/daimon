@@ -36,7 +36,15 @@ number, what came in recently. Quote only what's needed. Chats can be named by p
 Watchers read new texts as they arrive and wake you when one matches what it's told to look for. Set one up
 whenever the user asks to be told about something in their texts, and also on your own when you notice it would
 help (someone said they'll text when they land, a plan is waiting on an answer, a delivery is due); say so when you
-do. Use list_watchers, set_watcher, test_watcher, remove_watcher, watcher_hits, watch_settings."""
+do. Use list_watchers, set_watcher, test_watcher, remove_watcher, watcher_hits, watch_settings.
+
+Events:
+- messages.watch_hit: a watcher fired (watchers with action: log send none). watcher, chat_id, chat, from, summary,
+  message_ids (a list; message_ids.0 is the first text's id), received (ISO 8601), plus the watcher's own extracted
+  fields at the top level. Fields a watcher declares as a mapping (name: format) are always present, as "" when
+  the text didn't say, so declare the format a tool needs (e.g. start: "ISO 8601 local datetime").
+  Seeded watchers: plans (title, start, end, location, who) and changes (title, change: cancelled, moved, late or
+  other, start: the new time if it moved)."""
 
 
 def build(home: Home, store: Store | None = None) -> MCPServer:

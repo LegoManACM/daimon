@@ -34,6 +34,18 @@ class Server:
     client: Client | None = None
     tools: list[Any] = field(default_factory=list)
     error: str = ""
+    instructions: str = ""  # what the server says about itself; an "Events:" part lists the events it sends
+
+    def overview(self) -> str:
+        """The instructions without the events list (that part is read on demand, with the guide tool)."""
+        return EVENTS.split(self.instructions, 1)[0].strip()
+
+    def events(self) -> str:
+        parts = EVENTS.split(self.instructions, 1)
+        return parts[1].strip() if len(parts) > 1 else ""
+
+
+EVENTS = re.compile(r"^Events:[ \t]*$", re.M)  # add-ons end their instructions with this line and the list
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -112,6 +124,7 @@ class McpHub:
                 raise ValueError("needs either 'command' or 'url'")
             server.client = await stack.enter_async_context(Client(transport, read_timeout_seconds=120))
             server.tools = (await server.client.list_tools()).tools
+            server.instructions = (server.client.instructions or "").strip()
             server.stack = stack
         except BaseException as e:  # noqa: BLE001 - one bad server must not take the agent down
             server.error = f"{type(e).__name__}: {e}"

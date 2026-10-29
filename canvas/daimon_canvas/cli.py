@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import getpass
 import sys
+import time
 
 from .client import CanvasClient
 from .config import Home, resolve_home
@@ -69,6 +70,24 @@ def todo(home: Home, days: int) -> int:
     return 0
 
 
+def watch(home: Home, every: float) -> int:
+    """Report what's new on Canvas to the agent's inbox, once or every `every` minutes."""
+    from .watch import run
+
+    cfg, token = home.config(), home.token()
+    while not cfg.url or not token:
+        print("Not set up: run `daimon-canvas login`.", flush=True)
+        if every <= 0:
+            return 1
+        time.sleep(every * 60)  # started at login before the sign-in: wait for it rather than fail
+        cfg, token = home.config(), home.token()
+    client = CanvasClient(cfg.url, token, cfg.tz(), max_file_mb=cfg.max_file_mb)
+    try:
+        return asyncio.run(run(home, client, every, say=lambda line: print(line, flush=True)))
+    except KeyboardInterrupt:
+        return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="daimon-canvas", description=__doc__)
     parser.add_argument("--home", help="the server's folder (default $DAIMON_CANVAS_HOME or ~/.daimon-canvas)")
@@ -79,6 +98,9 @@ def main() -> None:
     sub.add_parser("status", help="check the login")
     p_todo = sub.add_parser("todo", help="what's due, as the agent would see it")
     p_todo.add_argument("--days", type=int, default=7)
+    p_watch = sub.add_parser("watch", help="report new work, changed due dates and grades to the agent's inbox")
+    p_watch.add_argument("--every", type=float, default=0, metavar="MINUTES",
+                         help="keep checking this often (default: check once and stop)")
     args = parser.parse_args()
 
     if sys.platform == "win32":
@@ -96,3 +118,5 @@ def main() -> None:
         sys.exit(status(home))
     elif args.cmd == "todo":
         sys.exit(todo(home, args.days))
+    elif args.cmd == "watch":
+        sys.exit(watch(home, args.every))

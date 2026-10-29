@@ -1,4 +1,4 @@
-"""The Canvas MCP server (`daimon-canvas mcp`, stdio): homework, classes, grades and announcements, read-only.
+"""The Canvas MCP server (`daimon-canvas mcp`, stdio): homework, classes, grades, announcements, messages, read-only.
 
 Everything goes straight to the Canvas API with the user's access token; nothing is stored except what
 canvas_open downloads into files/, which read_canvas_file pages through.
@@ -17,12 +17,38 @@ from .client import (CanvasClient, CanvasError, CanvasFile, ModuleItem, course_n
 from .config import Home
 from .files import Files, folder_name, human_size, safe_name
 
+# Nothing changes on Canvas. canvas_open and canvas_course keep copies in files/, which is only a local cache.
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+LOCAL = ToolAnnotations(read_only_hint=True, open_world_hint=False)  # only reads files already downloaded
 
 INSTRUCTIONS = """The user's Canvas (their school's learning system): homework due, their classes' modules, pages and
-files, grades and announcements. Read-only: nothing here submits or changes anything on Canvas.
+files, grades, announcements, class events, the Canvas inbox and feedback on submitted work. Read-only: nothing here
+submits, sends, marks read or changes anything on Canvas.
 Start with canvas_assignments for what's due, or canvas_course to browse a class; both give ids for canvas_open.
 canvas_open saves attachments and files to the downloads folder; read_canvas_file reads them, PDFs and Word too."""
+
+# Daimon keeps the overview above in the agent's prompt and serves this part on demand (guide("canvas")), for writing
+# reactions. Keep it in step with watch.py.
+EVENTS = """Events:
+Sent while `daimon-canvas watch` runs (setup starts it at login). Times are ISO 8601 local; empty fields are left out.
+- canvas.assignment_due: work not done yet came within watch_days (14) of its due date; once per item. course,
+  course_id, assignment_id (stable, e.g. assignment:9:1 or quiz:10:2: use source "canvas:{assignment_id}"), kind,
+  title, due, due_date, url, points.
+- canvas.assignment_changed: one already reported got a new due date, title or points. The same fields, plus changed
+  (a list of due/title/points), previous_due, previous_title.
+- canvas.grade_posted: a grade was released or changed. course, course_id, assignment_id, title, score, grade,
+  points, url, graded_at.
+- canvas.announcement_posted: course, course_id, announcement_id, title, author, posted_at, url, text (plain,
+  up to 1500 characters).
+- canvas.inbox_message: someone wrote to the user in the Canvas inbox. conversation_id, message_id, subject, course,
+  from, sent_at, text, files, url.
+- canvas.submission_comment: a teacher or TA commented on submitted work. course, course_id, assignment_id, title,
+  comment_id, from, posted_at, text, url.
+- canvas.module_unlocked: a module opened or was published. course, course_id, module_id, module, items, url, new.
+- canvas.course_event: a class event that isn't an assignment (lecture, exam, trip) within watch_days. course,
+  course_id, event_id (stable, e.g. event:50), title, start, end, all_day, date, location, url, description.
+- canvas.course_event_changed: one already reported changed. The same fields, plus changed, previous_start,
+  previous_title."""
 
 
 def clip(text: str, max_chars: int) -> str:
@@ -46,7 +72,7 @@ def build(home: Home, client: CanvasClient | None = None) -> MCPServer:
     cfg = home.config()
     files = Files(home.files)
     budget = max(1000, int(cfg.read_chars))
-    server = MCPServer("canvas", instructions=INSTRUCTIONS + f"\nThe downloads folder is {files.root}.")
+    server = MCPServer("canvas", instructions=INSTRUCTIONS + f"\nThe downloads folder is {files.root}.\n\n{EVENTS}")
     clients: list[CanvasClient] = [client] if client else []
 
     def canvas() -> CanvasClient:
@@ -223,7 +249,7 @@ def build(home: Home, client: CanvasClient | None = None) -> MCPServer:
             body = clip(body, max(room, 500)) + f"\n(Cut short: read_canvas_file reads all of {details_path}.)"
         return "\n".join([*head, "", body, *tail])
 
-    @server.tool(annotations=READ)
+    @server.tool(annotations=LOCAL)
     def read_canvas_file(path: str, start_line: int = 1) -> str:
         """Read a file canvas_open or canvas_course saved (its path as they gave it), as text: PDFs, Word, slides,
         spreadsheets too. Long files come a page at a time; start_line continues where the last read stopped."""
@@ -259,6 +285,70 @@ def build(home: Home, client: CanvasClient | None = None) -> MCPServer:
         if not full:
             out.append("(Shortened. Filter by course to read them in full.)")
         return ("\n\n" if full else "\n").join(out)
+
+    @server.tool(annotations=READ)
+    @friendly
+    async def canvas_inbox(unread_only: bool = False) -> str:
+        """The Canvas inbox (messages from teachers and classmates), newest conversation first, with the latest
+        message of each. canvas_message reads a whole conversation. Nothing is marked read."""
+        convs = await canvas().conversations(unread_only)
+        if not convs:
+            return "No unread Canvas messages." if unread_only else "The Canvas inbox is empty."
+        lines = []
+        for c in convs[:20]:
+            when = f"{c['last_at']:%a %m-%d %H:%M}" if c["last_at"] else "?"
+            mark = " (unread)" if c["unread"] else ""
+            course = f" | {c['course']}" if c["course"] else ""
+            lines.append(f"{when}{course} | {c['subject']}{mark} | with {', '.join(c['with'])} | id {c['id']}\n"
+                         f"  {clip(c['last_message'], 200)}")
+        return "\n".join(lines)
+
+    @server.tool(annotations=READ)
+    @friendly
+    async def canvas_message(conversation: str) -> str:
+        """One Canvas inbox conversation in full, oldest message first. conversation: its id from canvas_inbox.
+        It stays unread on Canvas."""
+        c = await canvas().conversation(conversation.strip().removeprefix("id").strip(" :"))
+        head = f"{c['subject']}" + (f" ({c['course']})" if c["course"] else "")
+        msgs = []
+        for m in reversed(c["messages"]):
+            files = f"\n  Attached: {', '.join(m['files'])}" if m["files"] else ""
+            msgs.append(f"{m['at']:%a %m-%d %H:%M} {m['from']}:\n{m['text']}{files}" if m["at"] else
+                        f"{m['from']}:\n{m['text']}{files}")
+        text = head + "\n\n" + "\n\n".join(msgs)
+        return text if len(text) <= budget else clip(text[-budget:], budget) + "\n(Older messages cut.)"
+
+    @server.tool(annotations=READ)
+    @friendly
+    async def canvas_events(days_ahead: int = 14, course: str = "") -> str:
+        """Class events on Canvas that aren't assignments: lectures, exams, review sessions, trips. course filters by
+        class name."""
+        c = canvas()
+        now = datetime.now(c.tz)
+        days = max(1, min(days_ahead, 90))
+        items = await c.course_events(now, now + timedelta(days=days), course)
+        if not items:
+            return f"No class events in the next {days} days" + (f" for '{course}'." if course else ".")
+        lines = []
+        for e in items:
+            when = f"{e['start']:%a %m-%d}" + ("" if e["all_day"] else f" {e['start']:%H:%M}")
+            where = f" | {e['location']}" if e["location"] else ""
+            about = f"\n  {clip(e['text'], 200)}" if e["text"] else ""
+            lines.append(f"{when} | {e['course']} | {e['title']}{where}{about}")
+        return "\n".join(lines)
+
+    @server.tool(annotations=READ)
+    @friendly
+    async def canvas_feedback() -> str:
+        """Recent comments teachers and TAs left on the student's submitted work, newest first."""
+        c = canvas()
+        me = str((await c.me()).get("id"))
+        items = await c.feedback(me)
+        if not items:
+            return "No recent comments on submitted work."
+        return "\n".join(f"{x['at']:%m-%d} | {x['course']} | {x['title']} | {x['from']}: {clip(x['text'], 400)} "
+                         f"| id {x['assignment_id']}" if x["at"] else
+                         f"{x['course']} | {x['title']} | {x['from']}: {clip(x['text'], 400)}" for x in items[:15])
 
     @server.tool(annotations=READ)
     @friendly

@@ -5,6 +5,7 @@ $DAIMON_CANVAS_HOME (default ~/.daimon-canvas), apart from the agent's home like
   config.yaml     settings below (written with defaults on first run)
   token           the Canvas access token (`daimon-canvas login` writes it); CANVAS_TOKEN in the environment wins
   files/          what canvas_open downloaded: assignment details, attachments, course files
+  watch.json      what `daimon-canvas watch` has already reported, so nothing is reported twice
 """
 from __future__ import annotations
 
@@ -27,6 +28,10 @@ timezone: ""
 max_file_mb: 25
 # How much of an assignment or file canvas_open shows at once; read_canvas_file pages through the rest.
 read_chars: 6000
+# `daimon-canvas watch` reports work coming due this many days ahead, and changes to it.
+watch_days: 14
+# Where watch drops its events: the agent's inbox folder ("" = $DAIMON_HOME/inbox, else ~/.daimon/inbox).
+agent_inbox: ""
 """
 
 
@@ -41,12 +46,19 @@ class Config:
     timezone: str = ""
     max_file_mb: int = 25
     read_chars: int = 6000
+    watch_days: int = 14
+    agent_inbox: str = ""
 
     def tz(self) -> tzinfo:
         if self.timezone:
             from zoneinfo import ZoneInfo
             return ZoneInfo(self.timezone)
         return datetime.now().astimezone().tzinfo
+
+    def inbox(self) -> Path:
+        if self.agent_inbox:
+            return Path(self.agent_inbox).expanduser()
+        return Path(os.environ.get("DAIMON_HOME") or Path.home() / ".daimon").expanduser() / "inbox"
 
 
 class Home:
@@ -67,6 +79,10 @@ class Home:
     @property
     def files(self) -> Path:
         return self.root / "files"
+
+    @property
+    def watch_state(self) -> Path:
+        return self.root / "watch.json"
 
     def config(self) -> Config:
         raw: dict[str, Any] = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}

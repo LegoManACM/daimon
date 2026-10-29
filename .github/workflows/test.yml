@@ -19,10 +19,10 @@ jobs:
         shell: bash
         run: |
           uv venv --python 3.12
-          uv pip install -e . -e ./canvas -e ./messaging pytest
+          uv pip install -e . -e ./canvas -e ./messaging -e ./calendars pytest
       - name: Test
         shell: bash
         run: |
           py=.venv/bin/python
           [ -x "$py" ] || py=.venv/Scripts/python
-          "$py" -m pytest -q tests canvas/tests messaging/tests
+          "$py" -m pytest -q tests canvas/tests messaging/tests calendars/tests

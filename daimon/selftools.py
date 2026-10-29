@@ -13,7 +13,9 @@ from typing import Any, Callable
 
 import yaml
 
+from . import guide as guides
 from . import harness as harnesses
+from . import reactions
 from .gate import Surface, Tool
 from .home import PROTECTED, Home, split_frontmatter
 from .mcp_hub import McpHub
@@ -59,6 +61,8 @@ def build(home: Home, hub: McpHub, surface: Surface) -> list[Tool]:
             yaml.safe_load(new)  # refuse to write broken YAML the runtime can't load
         if rel == "mcp.json":
             json.loads(new)
+        if rel.startswith("reactions/") and rel.endswith(".md"):
+            reactions.parse(rel[len("reactions/"):-3], new)  # refuse a reaction the runtime can't read
         if rel.startswith("workers/") and rel.endswith(".md"):
             meta = split_frontmatter(new)[0]
             model, harness = meta.get("model"), meta.get("harness")
@@ -105,6 +109,12 @@ def build(home: Home, hub: McpHub, surface: Surface) -> list[Tool]:
         return text.replace(old_text, new_text)
 
     # ---- reading -------------------------------------------------------------------------------------
+    @tool("guide", "Read the full guide on a topic: how to set it up, its rules and examples. Topics are listed "
+          "under 'Add-ons and guides' (reactions, consent, models, ..., and each add-on by name).",
+          obj(["topic"], topic=STR))
+    def read_guide(topic: str) -> str:
+        return guides.read(home, hub, topic)
+
     @tool("list_agent_files", "List the files that make up you (your home folder).", obj([]))
     def list_agent_files() -> str:
         return "\n".join(home.files())

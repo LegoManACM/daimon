@@ -25,6 +25,7 @@ class Addon:
     folder: str       # its folder in the repo
     blurb: str
     consent: dict[str, str] = field(default_factory=dict)
+    background: list[str] = field(default_factory=list)  # what it runs at login beside the agent (-m <module> ...)
 
     @property
     def dist(self) -> str:
@@ -33,9 +34,19 @@ class Addon:
 
 ADDONS = {
     "canvas": Addon("canvas", "Canvas", "daimon_canvas", "canvas",
-                    "your classes, homework, grades and course files from Canvas LMS"),
+                    "your classes, homework, grades and course files from Canvas LMS",
+                    # reports new work, due date changes and grades to the inbox as canvas.* events
+                    background=["watch", "--every", "30"]),
     "messages": Addon("messages", "Text messages", "daimon_messages", "messaging",
-                      "your SMS/RCS texts through Google Messages", {"send_message": "ask"}),
+                      "your SMS/RCS texts through Google Messages",
+                      # watchers only wake the agent, so it may set them up on its own and tell you; which model
+                      # reads your texts (local or cloud) is yours to approve
+                      {"send_message": "ask", "set_watcher": "notify", "remove_watcher": "notify",
+                       "watch_settings": "ask"},
+                      background=["run"]),
+    "calendar": Addon("calendar", "Calendar", "daimon_calendar", "calendars",
+                      "Google, Outlook, iCloud and other calendars: what's on, free time, adding events",
+                      {"calendar_add_event": "ask", "calendar_update_event": "ask", "calendar_delete_event": "ask"}),
 }
 
 

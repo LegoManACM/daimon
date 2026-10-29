@@ -15,13 +15,14 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from ..home import Home
+from . import addons
 
 PASSED_ENV = ("DAIMON_SECRETS", "DAIMON_CANVAS_HOME", "DAIMON_MESSAGES_HOME")
 
 
 @dataclass
 class Job:
-    key: str            # daimon | daimon-messages
+    key: str            # daimon | daimon-messages | daimon-canvas
     title: str          # the Windows task name
     label: str          # the macOS LaunchAgent label
     argv: list[str]
@@ -32,14 +33,19 @@ class Job:
         return f"{self.key}.service"
 
 
-def jobs(home: Home, messages: bool = True, agent: bool = True, python: str = sys.executable) -> list[Job]:
+def addon_job(home: Home, key: str, python: str) -> Job:
+    a = addons.ADDONS[key]
+    return Job(f"daimon-{key}", f"Daimon {key.title()}", f"com.daimon.{key}", [python, "-m", a.module, *a.background],
+               home.cache / f"daimon-{key}.log")
+
+
+def jobs(home: Home, messages: bool = True, agent: bool = True, python: str = sys.executable,
+         canvas: bool = True) -> list[Job]:
     out = []
     if agent:
         out.append(Job("daimon", "Daimon", "com.daimon.agent",
                        [python, "-m", "daimon", "--home", str(home.root), "run"], home.cache / "daimon.log"))
-    if messages:
-        out.append(Job("daimon-messages", "Daimon Messages", "com.daimon.messages",
-                       [python, "-m", "daimon_messages", "run"], home.cache / "daimon-messages.log"))
+    out += [addon_job(home, key, python) for key, wanted in (("messages", messages), ("canvas", canvas)) if wanted]
     return out
 
 
@@ -299,15 +305,15 @@ OPS = {
 }
 
 
-def install(home: Home, messages: bool, start_now: bool = False, agent: bool = True) -> list[str]:
+def install(home: Home, messages: bool, start_now: bool = False, agent: bool = True, canvas: bool = False) -> list[str]:
     """Install auto-start for each job (replacing an older install, removing jobs left out). Returns a line per job."""
     do_install, do_start, *_ = OPS[platform()]
     home.cache.mkdir(parents=True, exist_ok=True)
     out = []
-    for key, wanted in (("daimon", agent), ("daimon-messages", messages)):
+    for key, wanted in (("daimon", agent), ("daimon-messages", messages), ("daimon-canvas", canvas)):
         if not wanted:
             uninstall(home, only=key)
-    for job in jobs(home, messages, agent):
+    for job in jobs(home, messages, agent, canvas=canvas):
         where = do_install(home, job)
         line = f"{job.key}: {where}"
         if start_now:

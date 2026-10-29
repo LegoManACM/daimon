@@ -179,8 +179,28 @@ def test_tools_are_read_only(home):
             return (await c.list_tools()).tools
     tools = asyncio.run(go())
     assert {t.name for t in tools} == {"canvas_assignments", "canvas_course", "canvas_open", "read_canvas_file",
-                                       "canvas_grades", "canvas_announcements", "canvas_status"}
+                                       "canvas_grades", "canvas_announcements", "canvas_status", "canvas_inbox",
+                                       "canvas_message", "canvas_events", "canvas_feedback"}
     assert all(t.annotations.read_only_hint for t in tools)
+    assert [t.name for t in tools if not t.annotations.open_world_hint] == ["read_canvas_file"]
+
+
+def test_knows_no_other_add_ons():
+    """Add-ons never name each other: what Canvas feeds goes out as events, and the agent's rules decide."""
+    import daimon_canvas
+    from pathlib import Path
+    for path in Path(daimon_canvas.__file__).parent.glob("*.py"):
+        text = path.read_text(encoding="utf-8").lower()
+        # Canvas's own calendar_events API is fine; another add-on's package or tools are not
+        assert not any(w in text for w in ("daimon_calendar", "calendar_add_event", "calendar__", "daimon_messages",
+                                           "send_message", "messages__")), path.name
+
+
+def test_canvas_trouble_is_plain_text(home):
+    async def calls(call):
+        return await call("canvas_grades")
+    result = run(home, calls, transport=lambda request: httpx.Response(500, json={}))
+    assert result.is_error and "Canvas answered 500 for /api/v1/courses." in text(result)
 
 
 def test_not_set_up_says_how(home):
@@ -327,3 +347,60 @@ def test_save_login_keeps_comments(home):
     assert home.config().url == "https://school.instructure.com" and home.token() == "secret"
     assert "# Your school's Canvas" in home.config_path.read_text()
 
+
+
+INBOX = [{"id": 300, "subject": "Lab partner", "context_name": "CHEM 1A", "workflow_state": "unread",
+          "participants": [{"id": 1, "name": "Sam"}, {"id": 3, "name": "Ms. Rivera"}],
+          "last_message": "Please pair with Jo.", "last_message_at": "2026-09-22T17:00:00Z"}]
+THREAD = {"id": 300, "subject": "Lab partner", "context_name": "CHEM 1A",
+          "participants": [{"id": 1, "name": "Sam"}, {"id": 3, "name": "Ms. Rivera"}],
+          "messages": [{"id": 902, "author_id": 3, "created_at": "2026-09-22T17:00:00Z", "body": "Please pair with Jo.",
+                        "attachments": [{"display_name": "pairs.pdf"}]},
+                       {"id": 901, "author_id": 1, "created_at": "2026-09-22T16:00:00Z", "body": "Who is my partner?"}]}
+
+
+def more(request: httpx.Request) -> httpx.Response:
+    """The fake Canvas, plus the inbox, class events and the activity stream."""
+    path = request.url.path
+    if path == "/api/v1/conversations":
+        return httpx.Response(200, json=INBOX if request.url.params.get("scope") != "unread" else [])
+    if path == "/api/v1/conversations/300":
+        assert request.url.params["auto_mark_as_read"] == "false"
+        return httpx.Response(200, json=THREAD)
+    if path == "/api/v1/conversations/9":
+        return httpx.Response(404, json={})
+    if path == "/api/v1/calendar_events":
+        assert request.url.params.get_list("context_codes[]") == ["course_10"]
+        return httpx.Response(200, json=[{"id": 50, "context_code": "course_10", "title": "Midterm",
+                                          "start_at": iso(5), "location_name": "Room 101",
+                                          "description": "<p>Bring a calculator.</p>"}])
+    if path == "/api/v1/users/self":
+        return httpx.Response(200, json={"id": 1, "name": "Sam"})
+    if path == "/api/v1/users/self/activity_stream":
+        return httpx.Response(200, json=[
+            {"type": "Announcement", "title": "Hi"},
+            {"type": "Submission", "course_id": 9, "assignment_id": 1, "assignment": {"name": "HW 3"},
+             "submission_comments": [
+                 {"id": 71, "author_id": 2, "author_name": "Prof. Ada", "comment": "Nice work on #3.",
+                  "created_at": "2026-09-23T17:00:00Z"},
+                 {"id": 72, "author_id": 1, "author_name": "Sam", "comment": "Thanks!",
+                  "created_at": "2026-09-23T18:00:00Z"}]}])
+    return handler(request)
+
+
+def test_inbox_events_and_feedback(home):
+    async def calls(call):
+        inbox = await call("canvas_inbox")
+        assert "Lab partner (unread) | with Sam, Ms. Rivera | id 300" in inbox and "Please pair with Jo." in inbox
+        assert await call("canvas_inbox", unread_only=True) == "No unread Canvas messages."
+        thread = await call("canvas_message", conversation="300")
+        assert thread.startswith("Lab partner (CHEM 1A)")
+        assert thread.index("Who is my partner?") < thread.index("Ms. Rivera:\nPlease pair with Jo.")
+        assert "Attached: pairs.pdf" in thread
+        assert "canvas_inbox lists them" in await call("canvas_message", conversation="9")
+        events = await call("canvas_events", course="chem")
+        assert "| CHEM 1A | Midterm | Room 101" in events and "Bring a calculator." in events
+        feedback = await call("canvas_feedback")
+        assert "MATH 2A Calculus | HW 3 | Prof. Ada: Nice work on #3. | id assignment:9:1" in feedback
+        assert "Thanks!" not in feedback
+    runs(home, calls, transport=more)

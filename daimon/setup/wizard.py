@@ -539,6 +539,12 @@ class Wizard:
         py = sys.executable
         if a.key == "canvas":
             argv, retry = [py, "-m", "daimon_canvas", "login"], "daimon-canvas login"
+        elif a.key == "calendar":
+            kind = self.ask.select("Which calendar? (Run `daimon-calendar add` again later for more.)", [
+                ("Google Calendar", "google"), ("Outlook / Microsoft 365", "microsoft"), ("Apple iCloud", "apple"),
+                ("Fastmail", "fastmail"), ("Yahoo", "yahoo"), ("Another CalDAV server (Nextcloud...)", "caldav"),
+                ("A read-only .ics / webcal address", "ics")])
+            argv, retry = [py, "-m", "daimon_calendar", "add", kind], f"daimon-calendar add {kind}"
         else:
             if not self.ensure_messages():
                 return False
@@ -589,7 +595,9 @@ class Wizard:
         if start and self.messages_proc:
             stop_process(self.messages_proc)  # the service starts its own copy
             self.messages_proc = None
-        lines = service.install(home, messages=messages, start_now=start, agent=has_tg)
+        # the Canvas watcher only feeds the agent's inbox, so it runs when the agent does
+        canvas = has_tg and ("canvas" in self.done.addons or "canvas" in home.mcp().get("mcpServers", {}))
+        lines = service.install(home, messages=messages, start_now=start, agent=has_tg, canvas=canvas)
         for line in lines:
             self.ok(esc(line))
         self.done.background = lines

@@ -16,7 +16,7 @@ jobs:
       - name: Check the versions match the tag
         run: |
           want="${GITHUB_REF_NAME#v}"
-          for f in pyproject.toml canvas/pyproject.toml messaging/pyproject.toml; do
+          for f in pyproject.toml canvas/pyproject.toml messaging/pyproject.toml calendars/pyproject.toml; do
             got=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$f")
             if [ "$got" != "$want" ]; then
               echo "::error file=$f::version is $got but the tag is $GITHUB_REF_NAME"
@@ -29,16 +29,16 @@ jobs:
       - name: Test
         run: |
           uv venv --python 3.12
-          uv pip install -e . -e ./canvas -e ./messaging pytest
-          .venv/bin/python -m pytest -q tests canvas/tests messaging/tests
+          uv pip install -e . -e ./canvas -e ./messaging -e ./calendars pytest
+          .venv/bin/python -m pytest -q tests canvas/tests messaging/tests calendars/tests
 
       - name: Build the wheels
         run: |
-          for dir in . canvas messaging; do
+          for dir in . canvas messaging calendars; do
             (cd "$dir" && uv build --wheel --out-dir "$GITHUB_WORKSPACE/dist")
           done
           v="${GITHUB_REF_NAME#v}"
-          for name in daimon daimon_canvas daimon_messages; do
+          for name in daimon daimon_canvas daimon_messages daimon_calendar; do
             test -f "dist/$name-$v-py3-none-any.whl" || { echo "::error::dist/$name-$v-py3-none-any.whl is missing"; exit 1; }
           done
 

@@ -89,7 +89,7 @@ main() {
     # Keep the add-ons an earlier install has (the wizard adds them), so upgrading doesn't drop them.
     set -- tool install --python 3.12 --force "$wheel"
     py="$("$uv" tool dir 2>/dev/null)/daimon/bin/python"
-    for m in daimon_canvas daimon_messages; do
+    for m in daimon_canvas daimon_messages daimon_calendar; do
         if [ -x "$py" ] && "$py" -c "import $m" >/dev/null 2>&1; then
             set -- "$@" --with "$base/$m-$version-py3-none-any.whl"
         fi

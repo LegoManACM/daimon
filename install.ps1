@@ -78,7 +78,7 @@
         $installArgs = @('tool', 'install', '--python', '3.12', '--force', $wheel)
         try {
             $py = Join-Path (& $uv tool dir | Out-String).Trim() 'daimon\Scripts\python.exe'
-            foreach ($m in @('daimon_canvas', 'daimon_messages')) {
+            foreach ($m in @('daimon_canvas', 'daimon_messages', 'daimon_calendar')) {
                 if (Test-Path $py) {
                     & $py -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$m') else 1)"
                     if ($LASTEXITCODE -eq 0) {

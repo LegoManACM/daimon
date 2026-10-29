@@ -53,6 +53,7 @@ class Assignment:
     done: bool = False  # submitted, graded, or ticked off in the Canvas planner
     course_id: str = ""
     item_id: str = ""
+    points: float | None = None
 
     @property
     def ref(self) -> str:
@@ -198,6 +199,7 @@ def parse_planner(items: list[dict], tz: tzinfo, base_url: str = "") -> list[Ass
                 done=bool(subs.get("submitted") or subs.get("graded") or override.get("marked_complete")),
                 course_id=str(course_id or ""),
                 item_id=str(it.get("plannable_id") or ""),
+                points=p.get("points_possible"),
             )
         )
     out.sort(key=lambda a: a.due or datetime.max.replace(tzinfo=timezone.utc))
@@ -260,6 +262,33 @@ class CanvasClient:
         )
         return parse_planner(items, self.tz, self.base)
 
+    async def graded(self, since: datetime) -> list[dict]:
+        """The student's submissions graded since `since` in active courses, with their assignment, newest first.
+        A grade Canvas hasn't released to the student has no score or grade, so it's left out."""
+        out = []
+        for c in await self.active_courses():
+            cid = str(c["id"])
+            subs = await self._get_all(f"courses/{cid}/students/submissions", {
+                "student_ids[]": "self", "include[]": "assignment", "workflow_state": "graded",
+                "graded_since": since.astimezone(timezone.utc).isoformat(), "per_page": 100,
+            }, quiet=True) or []
+            for s in subs:
+                a = s.get("assignment") or {}
+                if s.get("score") is None and not s.get("grade"):
+                    continue
+                graded_at = s.get("graded_at")
+                url = a.get("html_url") or ""
+                out.append({
+                    "course": course_name(c), "course_id": cid,
+                    "assignment_id": f"assignment:{cid}:{s.get('assignment_id') or a.get('id')}",
+                    "title": " ".join((a.get("name") or "(untitled)").split()),
+                    "score": s.get("score"), "grade": s.get("grade") or "", "points": a.get("points_possible"),
+                    "url": self.base + url if url.startswith("/") else url,
+                    "graded_at": datetime.fromisoformat(graded_at.replace("Z", "+00:00")).astimezone(self.tz)
+                    if graded_at else None,
+                })
+        return sorted(out, key=lambda g: g["graded_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
     async def courses(self) -> list[dict]:
         courses = await self._get_all("courses", {"enrollment_state": "active", "include[]": "total_scores", "per_page": 100})
         courses = [c for c in courses if isinstance(c, dict) and "id" in c and not c.get("access_restricted_by_date")]
@@ -286,12 +315,118 @@ class CanvasClient:
         return [
             {
                 "course": names.get(a.get("context_code"), ""),
+                "course_id": str(a.get("context_code") or "").removeprefix("course_"),
+                "id": str(a.get("id") or ""),
                 "title": a.get("title", ""),
+                "author": (a.get("author") or {}).get("display_name") or a.get("user_name") or "",
                 "posted": a.get("posted_at") or "",
+                "url": a.get("html_url") or a.get("url") or "",
                 "text": strip_html(a.get("message") or ""),
             }
             for a in items
         ]
+
+    def when(self, raw: str | None) -> datetime | None:
+        """A Canvas timestamp (UTC, 'Z') as local time."""
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(self.tz) if raw else None
+
+    def link(self, url: str) -> str:
+        return self.base + url if url.startswith("/") else url
+
+    async def conversations(self, unread_only: bool = False) -> list[dict]:
+        """The Canvas inbox, newest first: one entry per conversation. Listing doesn't mark anything read."""
+        params = {"per_page": 50} | ({"scope": "unread"} if unread_only else {})
+        convs = await self._get_all("conversations", params, max_pages=1, quiet=True) or []
+        return [{
+            "id": str(c.get("id")), "subject": " ".join((c.get("subject") or "(no subject)").split()),
+            "course": " ".join((c.get("context_name") or "").split()),
+            "with": [p.get("name", "") for p in c.get("participants") or []],
+            "last_message": strip_html(c.get("last_message") or ""),
+            "last_at": self.when(c.get("last_message_at")),
+            "last_mine_at": self.when(c.get("last_authored_message_at")),
+            "unread": c.get("workflow_state") == "unread", "count": c.get("message_count") or 0,
+        } for c in convs if isinstance(c, dict) and c.get("id")]
+
+    async def conversation(self, conversation_id: str) -> dict:
+        """One conversation with its messages, newest first. It stays unread on Canvas."""
+        c = await self._get_one(f"conversations/{conversation_id}", {"auto_mark_as_read": "false"})
+        if c is None:
+            raise CanvasError(f"No Canvas conversation {conversation_id}. canvas_inbox lists them.")
+        names = {str(p.get("id")): p.get("name", "") for p in c.get("participants") or []}
+        return {
+            "id": str(c.get("id")), "subject": " ".join((c.get("subject") or "(no subject)").split()),
+            "course": " ".join((c.get("context_name") or "").split()),
+            "messages": [{
+                "id": str(m.get("id")), "author_id": str(m.get("author_id")),
+                "from": names.get(str(m.get("author_id")), "someone"), "at": self.when(m.get("created_at")),
+                "text": strip_html(m.get("body") or ""),
+                "files": [a.get("display_name", "") for a in m.get("attachments") or []],
+            } for m in c.get("messages") or []],
+        }
+
+    async def course_events(self, start: datetime, end: datetime, course: str = "") -> list[dict]:
+        """Events the classes put on their Canvas calendars (lectures, exams, field trips), not assignments."""
+        names = {f"course_{c['id']}": course_name(c) for c in await self.active_courses()}
+        if course:
+            names = {k: v for k, v in names.items() if course.lower() in v.lower()}
+        codes, out = list(names), []
+        for i in range(0, len(codes), 10):  # Canvas takes at most 10 contexts per request
+            items = await self._get_all("calendar_events", {
+                "type": "event", "context_codes[]": codes[i:i + 10], "per_page": 100,
+                "start_date": start.astimezone(timezone.utc).isoformat(),
+                "end_date": end.astimezone(timezone.utc).isoformat(),
+            }, quiet=True) or []
+            for e in items:
+                if e.get("workflow_state") == "deleted" or not e.get("start_at"):
+                    continue
+                out.append({
+                    "id": str(e.get("id")), "course": names.get(e.get("context_code"), ""),
+                    "course_id": str(e.get("context_code") or "").removeprefix("course_"),
+                    "title": " ".join((e.get("title") or "(untitled)").split()),
+                    "start": self.when(e.get("start_at")), "end": self.when(e.get("end_at")),
+                    "all_day": bool(e.get("all_day")),
+                    "location": ", ".join(x for x in (e.get("location_name"), e.get("location_address")) if x),
+                    "url": self.link(e.get("html_url") or ""), "text": strip_html(e.get("description") or ""),
+                })
+        return sorted(out, key=lambda e: e["start"])
+
+    async def feedback(self, me_id: str) -> list[dict]:
+        """Recent comments other people (teachers, TAs) left on the student's submissions, newest first."""
+        names = {str(c["id"]): course_name(c) for c in await self.active_courses()}
+        items = await self._get_all("users/self/activity_stream", {"only_active_courses": "true", "per_page": 50},
+                                    max_pages=2, quiet=True) or []
+        out = []
+        for it in items:
+            if not isinstance(it, dict) or it.get("type") != "Submission":
+                continue
+            cid = str(it.get("course_id") or "")
+            a = it.get("assignment") or {}
+            aid = it.get("assignment_id") or a.get("id")
+            for c in it.get("submission_comments") or []:
+                if str(c.get("author_id")) == me_id:
+                    continue
+                out.append({
+                    "id": str(c.get("id")), "course": names.get(cid, ""), "course_id": cid,
+                    "assignment_id": f"assignment:{cid}:{aid}",
+                    "title": " ".join((a.get("name") or it.get("title") or "(untitled)").split()),
+                    "from": c.get("author_name") or (c.get("author") or {}).get("display_name") or "",
+                    "at": self.when(c.get("created_at")), "text": strip_html(c.get("comment") or ""),
+                    "url": self.link(it.get("html_url") or a.get("html_url") or ""),
+                })
+        return sorted(out, key=lambda c: c["at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    async def module_states(self) -> list[dict]:
+        """Every module in the active classes with whether it's open to the student yet."""
+        out = []
+        for c in await self.active_courses():
+            cid = str(c["id"])
+            for m in await self._get_all(f"courses/{cid}/modules", {"per_page": 100}, quiet=True) or []:
+                out.append({
+                    "id": str(m.get("id")), "course": course_name(c), "course_id": cid,
+                    "module": " ".join((m.get("name") or "(untitled)").split()), "state": m.get("state") or "",
+                    "items": m.get("items_count"), "url": f"{self.base}/courses/{cid}/modules/{m.get('id')}",
+                })
+        return out
 
     async def find(self, query: str) -> list[Assignment]:
         """Recent and upcoming work whose course + title contains every word of the query; an exact title wins."""

@@ -110,7 +110,8 @@ def test_add_server_keeps_existing_entries(home):
     servers = json.loads((home.root / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
     assert servers["canvas"] == {"command": "mine", "args": []} and servers["other"] == {"command": "x"}
     assert servers["messages"] == {"command": "py", "args": ["-m", "daimon_messages", "mcp"],
-                                   "consent": {"send_message": "ask"}}
+                                   "consent": {"send_message": "ask", "set_watcher": "notify",
+                                               "remove_watcher": "notify", "watch_settings": "ask"}}
 
 
 # ---- service ---------------------------------------------------------------------------------------------
@@ -131,11 +132,14 @@ def sh(monkeypatch):
 
 
 def test_jobs(home):
-    agent, messages = service.jobs(home, python="py")
+    agent, messages, canvas = service.jobs(home, python="py")
     assert agent.argv == ["py", "-m", "daimon", "--home", str(home.root), "run"]
     assert messages.argv == ["py", "-m", "daimon_messages", "run"]
-    assert [j.key for j in service.jobs(home, messages=False)] == ["daimon"]
-    assert [j.key for j in service.jobs(home, agent=False)] == ["daimon-messages"]
+    assert (messages.title, messages.label) == ("Daimon Messages", "com.daimon.messages")
+    assert canvas.argv == ["py", "-m", "daimon_canvas", "watch", "--every", "30"]
+    assert canvas.log == home.cache / "daimon-canvas.log"
+    assert [j.key for j in service.jobs(home, messages=False, canvas=False)] == ["daimon"]
+    assert [j.key for j in service.jobs(home, agent=False, canvas=False)] == ["daimon-messages"]
 
 
 def test_windows_launcher_text(home, tmp_path):
@@ -172,7 +176,7 @@ def test_windows_install_task_or_startup_folder(home, tmp_path, monkeypatch, sh)
 def test_windows_stop_kills_the_launcher_tree(home, monkeypatch, sh):
     monkeypatch.setattr(service, "platform", lambda: "windows")
     sh.results["powershell"] = (0, "123\n456\n", "")
-    assert service.stop(home) == ["daimon: stopped", "daimon-messages: stopped"]
+    assert service.stop(home) == ["daimon: stopped", "daimon-messages: stopped", "daimon-canvas: stopped"]
     assert ["taskkill", "/PID", "123", "/T", "/F"] in sh.calls
 
 
@@ -290,7 +294,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
     text = home.secrets_file.read_text(encoding="utf-8")
     assert "TELEGRAM_TOKEN=123:abc" in text and "TELEGRAM_CHAT_ID=42" in text
     assert sent == ["getMe", "sendMessage"]
-    assert installed == {"messages": False, "start_now": False, "agent": True}
+    assert installed == {"messages": False, "start_now": False, "agent": True, "canvas": False}
 
 
 def test_wizard_model_retry_then_keep(home, monkeypatch, clean_env):

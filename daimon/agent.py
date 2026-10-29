@@ -12,7 +12,7 @@ from typing import Any
 
 from datetime import datetime
 
-from . import inbox, tasktools
+from . import gate, inbox, knowledge, reactions, tasktools
 from .gate import Surface, Tool
 from .harness.run import RateLimited, limit_reason
 from .home import Home, split_frontmatter
@@ -50,6 +50,7 @@ class Agent:
         self.workers: dict[str, asyncio.Task] = {}
         self._tick = asyncio.Event()
         self._background: list[asyncio.Task] = []
+        self._reacting: set[asyncio.Task] = set()
         self._reported: set[str] = set()
         self.auto_update = False  # `daimon run` turns it on; updates.auto in config.yaml decides
 
@@ -63,9 +64,10 @@ class Agent:
             self._background.append(asyncio.create_task(self._updates()))
 
     async def stop(self) -> None:
-        for t in [*self._background, *self.workers.values()]:
+        running = [*self._background, *self.workers.values(), *self._reacting]
+        for t in running:
             t.cancel()
-        await asyncio.gather(*self._background, *self.workers.values(), return_exceptions=True)
+        await asyncio.gather(*running, return_exceptions=True)
         await self.hub.close()
 
     async def send(self, text: str) -> str:
@@ -79,9 +81,50 @@ class Agent:
             done = await self.runner.maybe_compact(self.thread, force=True)
             return "Older conversation folded into the summary." if done else "Nothing to compact yet."
 
+        async def recent_events(args: dict[str, Any]) -> str:
+            rows = reactions.recent(self.home, int(args.get("limit") or 10), args.get("event") or "*")
+            if not rows:
+                return "No events yet."
+            return "\n".join(f"- {datetime.fromtimestamp(r['ts']):%m-%d %H:%M} {r['event']} → "
+                             f"{', '.join(r['handled']) or 'no reaction'}\n  data: "
+                             f"{json.dumps(r['data'], ensure_ascii=False, default=str)}" for r in rows)
+
+        async def preview_reaction(args: dict[str, Any]) -> str:
+            name = args["name"]
+            text = args.get("content") or self.home.read(f"reactions/{name}.md")
+            if not text:
+                return f"reactions/{name}.md doesn't exist; pass content to preview a draft."
+            r = reactions.parse(name, text)
+            tools = await self.reaction_tools()
+            lines = [r.describe(), f"tool {r.call}: " + ("found" if r.call in tools else "NOT FOUND (check the name "
+                     "in mcp_status; MCP tools are named <server>__<tool>)")]
+            for row in reactions.recent(self.home, 50)[::-1]:
+                event = reactions.Event(row["event"], row["data"])
+                if not r.matches(event):
+                    continue
+                try:
+                    lines.append(f"Latest matching event ({row['event']}) would call it with: "
+                                 f"{json.dumps(r.render(event.data), ensure_ascii=False, default=str)}")
+                except ValueError as e:
+                    lines.append(f"Latest matching event ({row['event']}) would fail: {e}")
+                break
+            else:
+                lines.append("No logged event matches it yet (recent_events shows what has arrived).")
+            return "\n".join(lines)
+
+        obj = {"type": "object", "properties": {}}
         return tasktools.main_tools(self.home, self.tasks, self._tick.set, self.projects) + [
             Tool("compact_conversation", "Fold the older part of this conversation into its summary.",
-                 {"type": "object", "properties": {}}, compact, lambda _a: "auto")]
+                 obj, compact, lambda _a: "auto"),
+            Tool("recent_events", "Events that arrived from add-ons, routines and reactions, with their data and "
+                 "which reactions handled them. Use it to see an event's fields before writing a reaction.",
+                 {**obj, "properties": {"limit": {"type": "integer"}, "event": {
+                     "type": "string", "description": "name or glob, e.g. messages.*"}}},
+                 recent_events, lambda _a: "auto"),
+            Tool("preview_reaction", "Check a reaction (reactions/<name>.md, or a draft passed as content) without "
+                 "running it: whether its tool exists and what it would call for the latest matching event.",
+                 {**obj, "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
+                  "required": ["name"]}, preview_reaction, lambda _a: "auto")]
 
     # ---- main thread ---------------------------------------------------------------------------------
     async def _main_loop(self) -> None:
@@ -154,12 +197,17 @@ class Agent:
         self._dispatch()
 
     def _drops(self) -> None:
-        """Inbox items from other processes: urgent ones to main, the rest batched for the curator worker."""
-        items = inbox.take(self.home)
-        urgent = [i for i in items if str(i.meta.get("for", "")).lower() == "main"]
-        rest = [i for i in items if i not in urgent]
-        for item in urgent:
-            self.inbox.put_nowait(Item("inbox", item.describe()))
+        """Inbox items from other processes. Reactions that want one call their tool directly; the rest go to
+        main (urgent ones) or are batched for the curator worker."""
+        rest = []
+        for item in inbox.take(self.home):
+            event = reactions.Event.from_inbox(item.meta, item.body)
+            if self.react(event):
+                continue
+            if str(item.meta.get("for", "")).lower() == "main":
+                self.inbox.put_nowait(Item("inbox", item.describe()))
+            else:
+                rest.append(item)
         if not rest:
             return
         curator = self.home.config().get("knowledge", {}).get("curator", "curator")
@@ -171,6 +219,70 @@ class Agent:
         else:
             self.inbox.put_nowait(Item("inbox", f"There's no `{curator}` worker to file these, so they came to "
                                                 f"you:\n\n{listing}"))
+
+    # ---- reactions -----------------------------------------------------------------------------------
+    def react(self, event: reactions.Event) -> bool:
+        """Start every reaction that wants this event. True if they took it (none asked to pass it on)."""
+        found, errors = reactions.load(self.home)
+        for e in errors:
+            if e not in self._reported:
+                self._reported.add(e)
+                self.surface.event("error", e)
+        matched = [r for r in found if r.matches(event)] if event.depth <= reactions.MAX_DEPTH else []
+        reactions.record(self.home, event, [r.name for r in matched])
+        for r in matched:
+            t = asyncio.create_task(self._react(r, event))
+            self._reacting.add(t)
+            t.add_done_callback(self._reacting.discard)
+        return bool(matched) and not any(r.passes for r in matched)
+
+    async def reaction_tools(self) -> dict[str, Tool]:
+        """What a reaction may call: every MCP tool, tasks and wakes, knowledge. Not self-edits: event data
+        comes from other people (texts, mail), so it never gets to change the agent's own files."""
+        await self.hub.sync()
+        tools = self.hub.tools("all") + self.main_extra() + knowledge.tools(self.runner.kb)
+        return {t.name: t for t in tools}
+
+    async def _react(self, r: reactions.Reaction, event: reactions.Event) -> None:
+        who = f"reaction:{r.name}"
+        try:
+            tool = (await self.reaction_tools()).get(r.call)
+            if tool is None:
+                raise ValueError(f"no tool named {r.call} (is its MCP server connected?)")
+            args = r.render(event.data)
+            self.surface.event("tool", f"[{who}] {r.call} {gate.short(args)}")
+            result = await gate.call(tool, args, self.surface, who)
+            if result.startswith("Error:"):
+                raise RuntimeError(result[6:].strip())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - one bad reaction must not stop the others
+            self._react_failed(r, event, str(e))
+            return
+        if result.startswith("The user declined"):
+            self.surface.event("notify", f"{who}: declined")
+            return
+        first = result.strip().splitlines()[0][:200] if result.strip() else "done"
+        if r.then == "notify":
+            self.surface.event("notify", f"{who}: {first}")
+        elif r.then == "tell":
+            self.surface.say(first)
+        elif r.then == "main":
+            self.inbox.put_nowait(Item("inbox", f"Reaction `{r.name}` handled {event.name} by calling {r.call}.\n"
+                                                f"Result:\n{result}\n\nThe event:\n{event.text.strip()}"))
+        self.react(reactions.Event("reaction.done", {**event.data, "reaction": r.name, "event": event.name,
+                                                      "result": result[:2000]}, depth=event.depth + 1))
+
+    def _react_failed(self, r: reactions.Reaction, event: reactions.Event, error: str) -> None:
+        if r.on_error == "main":
+            about = event.text.strip() or json.dumps(event.data, ensure_ascii=False, default=str)
+            self.inbox.put_nowait(Item("inbox", f"Reaction `{r.name}` couldn't handle {event.name}: {error}\n"
+                                                f"Handle it yourself if it matters, and fix reactions/{r.name}.md "
+                                                f"if the rule is wrong.\n\nThe event:\n{about}"))
+        elif r.on_error == "tell":
+            self.surface.say(f"Reaction {r.name} failed: {error}")
+        else:
+            self.surface.event("error", f"reaction {r.name}: {error}")
 
     def _routines(self) -> None:
         state_file = self.home.cache / "routines.json"
@@ -199,9 +311,10 @@ class Agent:
 
     def _fire(self, name: str, meta: dict[str, Any], body: str) -> None:
         worker = meta.get("worker", "main")
+        self.react(reactions.Event(f"routine.{name}", {"routine": name}, body))
         if worker == "main":
             self.inbox.put_nowait(Item("routine", f"{name}\n\n{body.strip()}"))
-        else:
+        elif worker != "none":  # none: only the event, for reactions to act on with no model
             self.tasks.create(f"{name} {now():%m-%d}", body.strip(), worker=worker, created_by=f"routine:{name}",
                               project=meta.get("project"))
         self.surface.event("routine", name)

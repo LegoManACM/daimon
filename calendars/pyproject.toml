@@ -1,0 +1,29 @@
+[project]
+name = "daimon-calendar"
+version = "0.1.0"
+description = "Calendars for Daimon: Google, Outlook, iCloud and other CalDAV, and .ics feeds as one MCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.0",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "icalendar>=6.0",
+    "recurring-ical-events>=3.3",
+    "tzdata; sys_platform == 'win32'",
+]
+
+[project.scripts]
+daimon-calendar = "daimon_calendar.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["daimon_calendar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

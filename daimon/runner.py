@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import litellm
 
-from . import gate, knowledge, selftools
+from . import gate, guide, knowledge, reactions, selftools
 from .harness import describe as harness_list
 from .harness import run as harness
 from .gate import Surface, Tool
@@ -93,6 +93,7 @@ class Runner:
                 f"{m['id']} ({', '.join(t for t in tags if t)})" + (f" [missing {', '.join(missing)}]" if missing else ""))
         routines = [f"{n} ({m.get('schedule')}{'' if m.get('enabled', True) else ', disabled'})"
                     for n, m in self.routines()]
+        found, broken = reactions.load(h)
         runtime = self.runtime(worker) + [
             f"- Home folder: {h.root}",
             f"- Your files: {', '.join(h.files())}",
@@ -105,6 +106,8 @@ class Runner:
             f"- Harnesses (external agents; their models run on their own account, never via models.yaml): "
             f"{'; '.join(harness_list(cfg))}",
             f"- Routines: {', '.join(routines) or 'none'}",
+            "- Reactions:" + ("".join(f"\n  - {r.describe()}" for r in found) or " none") +
+            "".join(f"\n  - BROKEN {e}" for e in broken),
             "- Open tasks:\n" + "\n".join(f"  - {line}" for line in summary(self.tasks.all(OPEN)).splitlines()),
             "- Active projects:\n" + "\n".join(
                 f"  - {line}" for line in project_summary(self.projects.all(("active",))).splitlines()),
@@ -114,6 +117,7 @@ class Runner:
         if thread.summary:
             sections.append(f"# Earlier in this conversation (summary)\n\n{thread.summary}")
         sections.append(self.knowledge_section(context))
+        sections.append(guide.index(h, self.hub))
         sections.append("\n".join(runtime))
         return "\n\n---\n\n".join(s.strip() for s in sections if s.strip())
 
@@ -123,8 +127,12 @@ class Runner:
         about = [f"# Your task: {task.title}", f"- id: {task.id}"] + \
                 [f"- {k}: {meta[k]}" for k in ("due", "created_by") if meta.get(k)]
         project = self.projects.get(meta["project"]) if meta.get("project") else None
+        allowed = worker.meta.get("mcps") or []
+        servers = [s for s in self.hub.servers.values() if s.instructions and not s.error
+                   and (allowed == "all" or s.name in allowed)]
+        addons = "# Your add-ons\n\n" + "\n\n".join(f"## {s.name}\n{s.overview()}" for s in servers) if servers else ""
         sections = [h.read("WORKER.md"), h.read("POLICY.md"), h.read("MEMORY.md"),
-                    f"# You are: {worker.name}\n\n{worker.prompt}", *self.skills(worker),
+                    f"# You are: {worker.name}\n\n{worker.prompt}", *self.skills(worker), addons,
                     "\n".join(about), project.context() if project else "", self.knowledge_section(context),
                     "\n".join(self.runtime(worker))]
         return "\n\n---\n\n".join(s.strip() for s in sections if s.strip())

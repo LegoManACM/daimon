@@ -190,6 +190,83 @@ the reset time and resumes in the same session.
 Not built yet: ACP (Agent Client Protocol) as a driver, lending our tools to CLI harnesses (over a local HTTP MCP
 server), `prefer_hours`, and falling back to another worker on a rate limit.
 
+## Add-ons and reactions
+
+Add-ons (messages, calendar, Canvas, ...) are separate programs that never import, name or configure each other.
+Each one does two things:
+
+- **Tools (verbs).** An MCP server with plain argument schemas a rule can fill without a model (ISO times, flat
+  strings), accurate `readOnlyHint` (consent defaults come from it), plain-text errors, and an optional
+  caller-chosen `source` key on anything that creates things, so a repeat updates instead of duplicating.
+- **Events (facts).** What it notices on its own goes to the inbox as a file whose frontmatter has
+  `event: <addon>.<name>` and a flat `data:` dict, plus a human-readable body. `for: main` is only a fallback
+  hint. Add-ons never decide what happens next.
+
+How events become actions lives in the agent's home, as files it writes itself: `reactions/<name>.md` matches an
+event (`on`, `when`) and calls one tool with `args` filled from the event's data (`{field}`, `{field?}`), through
+the consent gate as usual. A reaction that claims an event keeps it away from main, so routine plumbing costs no
+model calls. Failures (a missing field, a tool error) go to main with the error. Successes emit `reaction.done`,
+so reactions chain, and routines emit `routine.<name>` (with `worker: none` they do nothing else). That covers the
+whole range: a rule for mechanical mappings, `create_task` to a cheap worker when some judgment is needed, and main
+for anything else. Reactions can call MCP tools, task tools and knowledge tools, but never self-edits, because event
+data comes from other people. `recent_events` shows events with their fields and what handled them, and
+`preview_reaction` dry-runs a draft against the latest matching event.
+
+```markdown
+---
+on: messages.watch_hit
+when: {watcher: plans}
+call: calendar__calendar_add_event
+args: {title: "{title}", start: "{start}", end: "{end?}", location: "{location?}",
+       source: "sms:{chat_id}:{message_ids.0}"}
+then: notify
+---
+Plans made in texts go on the calendar (the add still asks unless the user loosened it).
+```
+
+**How the agent learns all this.** Its prompt carries only an index: each connected add-on's overview (its MCP
+server `instructions`), the add-ons not connected yet, and one line per guide. `guide(topic)` returns the full text
+on demand. The built-in guides (`daimon/guides/*.md`: reactions, consent, models, workers, routines, connections,
+config, files) ship with the code, each with rules and worked examples. A test parses every reaction example, so
+the guides can't drift from the code. An add-on's guide is its instructions plus its tools and their consent
+levels. Add-ons end their instructions with an `Events:` line and the list of events and fields; that part stays
+out of the prompt and is served only by its guide.
+
+Extracting fields is the emitter's job (a messages watcher's `fields: {start: "ISO 8601 local datetime"}`, filled by
+its own small model), so nothing between the add-ons needs a model to reshape data.
+
+Events the add-ons emit (times are ISO 8601 local, `2026-10-30T23:59`; empty fields are left out):
+
+- `messages.watch_hit`: a text watcher fired. `watcher`, `chat_id`, `chat`, `from`, `summary`, `message_ids`,
+  `received`, plus the watcher's own extracted fields.
+- `canvas.assignment_due`: work not yet done came within `watch_days` (14) of its due date; once per item.
+  `course`, `course_id`, `assignment_id` (the canvas_open id, `assignment:9:1`, `quiz:10:2`: stable, so
+  `source: "canvas:{assignment_id}"` makes a calendar add an upsert), `kind`, `title`, `due`, `due_date`, `url`,
+  `points`.
+- `canvas.assignment_changed`: something already reported got a new due date, title or points. The same fields, plus
+  `changed` (a list of due/title/points), `previous_due`, `previous_title`.
+- `canvas.grade_posted`: a grade was released or changed. `course`, `course_id`, `assignment_id`, `title`,
+  `score`, `grade`, `points`, `url`, `graded_at`.
+- `canvas.announcement_posted`: a class posted an announcement. `course`, `course_id`, `announcement_id`, `title`,
+  `author`, `posted_at`, `url`, `text` (plain, clipped to 1500 characters).
+- `canvas.inbox_message`: someone else wrote to the student in the Canvas inbox. `conversation_id`, `message_id`,
+  `subject`, `course`, `from`, `sent_at`, `text`, `files`, `url`. Nothing is marked read.
+- `canvas.submission_comment`: a teacher or TA commented on submitted work. `course`, `course_id`,
+  `assignment_id`, `title`, `comment_id`, `from`, `posted_at`, `text`, `url`.
+- `canvas.module_unlocked`: a module opened (it was locked, or was just published). `course`, `course_id`,
+  `module_id`, `module`, `items`, `url`, `new`.
+- `canvas.course_event`: a class event that isn't an assignment (lecture, exam, trip) within `watch_days`.
+  `course`, `course_id`, `event_id` (`event:50`, stable), `title`, `start`, `end` (dates when `all_day`), `all_day`,
+  `date`, `location`, `url`, `description`.
+- `canvas.course_event_changed`: one already reported changed. The same fields, plus `changed` (title, start, end,
+  location), `previous_start`, `previous_title`.
+
+Canvas events come from `daimon-canvas watch --every 30`, which setup runs at login beside the agent; what it has
+already reported is in its own home (`watch.json`), so a restart doesn't repeat anything. Upcoming work and class
+events are reported from the first pass; grades, announcements, messages, comments and modules start from the first
+pass that covers them, so turning the watcher on doesn't replay history. Each source keeps its own checkpoint: one
+that fails (a school that turned the inbox off) is retried next time without holding up the others.
+
 ## Projects
 
 Long-running work that spans many tasks and days. `projects/<name>.md` (state, git-ignored) holds the goal,
