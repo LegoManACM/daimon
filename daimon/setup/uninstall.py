@@ -11,7 +11,10 @@ from pathlib import Path
 from ..home import Home, resolve_home
 from . import service
 
-RUNNING = ["daimon_messages run", "-m daimon --home"]  # what start-at-login and setup leave running
+# What start-at-login, setup and MCP clients leave running from the program's folder: the agent, the add-on services
+# (messages, the Canvas watcher) and the add-ons' MCP servers. Any of them keeps files open, and then Windows won't
+# let the program be removed.
+RUNNING = ["-m daimon --home", "-m daimon_messages", "-m daimon_canvas", "-m daimon_calendar"]
 
 
 def addon_homes() -> list[Path]:
@@ -63,13 +66,15 @@ def describe(home: Home, paths: list[Path], kept: list[str], program: bool) -> s
 
 def stop_running() -> None:
     if os.name == "nt":
-        query = " -or ".join(f"$_.CommandLine -like '*{pattern}*'" for pattern in RUNNING)
-        ps = (f"Get-CimInstance Win32_Process | Where-Object {{ ({query}) -and $_.ProcessId -ne {os.getpid()} -and $_.Name -notlike 'powershell*' }} | "
+        # Windows keeps each argument quoted ("-m" "daimon_messages" "run"), so compare without the quotes.
+        query = " -or ".join(f"($_.CommandLine -replace '\"', '') -like '*{pattern}*'" for pattern in RUNNING)
+        ps = (f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -and ({query}) -and "
+              f"$_.ProcessId -ne {os.getpid()} -and $_.Name -notlike 'powershell*' }} | "
               "ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }")
         subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
     else:
         for pattern in RUNNING:
-            subprocess.run(["pkill", "-f", pattern], capture_output=True)
+            subprocess.run(["pkill", "-f", "--", pattern], capture_output=True)
 
 
 def delete(path: Path) -> str:
@@ -91,11 +96,12 @@ def remove_program() -> str:
     """Uninstall the uv tool once this process has exited (Windows won't delete a running program)."""
     uv = shutil.which("uv")
     if os.name == "nt":
-        # ping is the delay: `timeout` needs a console, which a detached cmd doesn't have
+        # A hidden console (CREATE_NO_WINDOW) that ping and uv share. Not DETACHED_PROCESS: Windows then ignores
+        # CREATE_NO_WINDOW, and every console program the loop starts opens a window of its own.
         script = f'for /l %i in (1,1,10) do (ping -n 3 127.0.0.1 >nul & "{uv}" tool uninstall daimon >nul 2>&1 && exit)'
         subprocess.Popen(["cmd", "/c", script], close_fds=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, creationflags=subprocess.DETACHED_PROCESS |
-                         subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+                         stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
         return "The daimon program is removed in a few seconds, once this command has finished."
     r = subprocess.run([uv, "tool", "uninstall", "daimon"], capture_output=True, text=True)
     return "Removed the daimon program." if r.returncode == 0 else \
