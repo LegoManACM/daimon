@@ -1,4 +1,4 @@
-"""`daimon` command line: setup, init, chat, run, ask, inbox, service."""
+"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service."""
 from __future__ import annotations
 
 import argparse
@@ -110,7 +110,7 @@ def cmd_service(args: argparse.Namespace) -> None:
     if args.action == "install":
         if not configured(home):
             sys.exit(f"Running in the background needs a channel to reach you on: put TELEGRAM_TOKEN=... in "
-                     f"{home.secrets_file} (or run `daimon setup`) first.")
+                     f"{home.secrets_file} (or run `daimon config telegram`) first.")
         messages = args.messages if args.messages is not None else "messages" in home.mcp().get("mcpServers", {})
         lines = service.install(home, messages=messages, start_now=args.start)
         lines.append("While it runs, `daimon chat` can't open this agent: talk to it on Telegram, or "
@@ -278,6 +278,9 @@ def main() -> None:
     parser.add_argument("--home", help="agent home folder (default: $DAIMON_HOME or ~/.daimon)")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
+    p_config = sub.add_parser("config", help="change one part of the setup (no part: pick from a menu)")
+    p_config.add_argument("section", nargs="?", choices=["model", "key", "telegram", "claude", "addons",
+                                                         "background", "show"])
     p_init = sub.add_parser("init", help="create the agent's home folder")
     p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")
     sub.add_parser("chat", help="run the agent and chat with it (plus any channels, like Telegram)")
@@ -310,6 +313,9 @@ def main() -> None:
     elif args.cmd == "setup":
         from .setup.wizard import run as setup
         sys.exit(setup(args.home))
+    elif args.cmd == "config":
+        from .setup.wizard import configure
+        sys.exit(configure(args.home, args.section))
     elif args.cmd == "service":
         cmd_service(args)
     elif args.cmd == "init":

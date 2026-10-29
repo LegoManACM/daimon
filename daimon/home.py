@@ -114,11 +114,13 @@ class Home:
         self.commit("init: starter files")
         return created
 
-    def _use_model(self, model: str) -> None:
+    def _use_model(self, model: str, price: tuple[float, float] | None = None) -> None:
         # Text edits rather than a YAML round-trip, so the starter files keep their comments.
         text = self.read("models.yaml")
         if not self.model_entry(model):
-            text = text.replace("models:\n", f"models:\n  - id: {model}\n    tier: standard\n    good_for: [general]\n", 1)
+            cost = f"    price: {{in: {price[0]:g}, out: {price[1]:g}}}\n" if price else ""
+            text = text.replace("models:\n", f"models:\n  - id: {model}\n    tier: standard\n    good_for: [general]\n"
+                                             f"{cost}", 1)
         text = re.sub(r"^default_for_new_workers:.*$", f"default_for_new_workers: {model}", text, flags=re.M)
         self.write("models.yaml", text)
         main = re.sub(r"^model:.*$", f"model: {model}", self.read("workers/main.md"), count=1, flags=re.M)

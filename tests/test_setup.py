@@ -13,7 +13,8 @@ from rich.console import Console
 
 from daimon import cli
 from daimon.home import Home
-from daimon.setup import addons, service, wizard
+from daimon.setup import addons, providers, service, wizard
+from daimon.setup.providers import KeyProblem, Model
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    for k in ("ANTHROPIC_API_KEY", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "DAIMON_CANVAS_HOME", "DAIMON_MESSAGES_HOME"):
+    for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "DAIMON_CANVAS_HOME", "DAIMON_MESSAGES_HOME"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -234,6 +235,11 @@ class Scripted:
         assert answer in [v for _, v in choices], (message, answer)
         return answer
 
+    def pick(self, message, choices, default=None):
+        answer = self._next(message)
+        assert answer in [v for _, v, _ in choices], (message, answer)
+        return answer
+
     def text(self, message, default=""):
         return self._next(message)
 
@@ -255,13 +261,15 @@ def test_wizard_minimal(tmp_path, monkeypatch, clean_env):
     monkeypatch.setenv("DAIMON_SECRETS", str(tmp_path / "secrets.env"))
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(tmp_path / "home"), "anthropic", "sk-test", "anthropic/claude-opus-5-5", "no", [])
+    monkeypatch.setattr(wizard, "fetch_models", lambda p, key: [Model("anthropic/claude-opus-5-5")])
+    ask = Scripted(str(tmp_path / "home"), "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "no", [])
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers
     h = Home(tmp_path / "home")
     assert h.worker("main").model == "anthropic/claude-opus-5-5"
-    assert "ANTHROPIC_API_KEY=sk-test" in h.secrets_file.read_text(encoding="utf-8")
-    assert "Ready" in w.out.file.getvalue()
+    assert "ANTHROPIC_API_KEY=sk-ant-test" in h.secrets_file.read_text(encoding="utf-8")
+    out = w.out.file.getvalue()
+    assert "Ready" in out and "Got 11 characters" in out
 
 
 def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
@@ -288,7 +296,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
 def test_wizard_model_retry_then_keep(home, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "AuthenticationError: bad key")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(home.root), "keep", "anthropic", "", "anthropic/claude-haiku-5-5", "keep", "no", [])
+    ask = Scripted(str(home.root), "keep", "anthropic", "", "skip", "anthropic/claude-haiku-5-5", "keep", "no", [])
     assert make_wizard(ask).run() == 0
     assert home.worker("main").model == "anthropic/claude-haiku-5-5"
 
@@ -297,3 +305,70 @@ def test_no_args_suggests_setup(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["daimon", "--home", str(tmp_path / "nothing")])
     cli.main()
     assert "daimon setup" in capsys.readouterr().out
+
+
+# ---- providers, keys, models, config ---------------------------------------------------------------------
+def test_clean_and_mask_keys():
+    assert providers.clean_key('  "OPENROUTER_API_KEY=sk-or-v1-abc"\n', "OPENROUTER_API_KEY") == "sk-or-v1-abc"
+    assert providers.clean_key("Bearer sk-ant-x y") == "sk-ant-xy"
+    assert providers.masked("sk-or-v1-0123456789abcdef") == "sk-or-…cdef" and providers.masked("short") == "*****"
+
+
+def test_openrouter_models_and_bad_key(monkeypatch):
+    def get(url, **kw):
+        if url.endswith("/key"):
+            ok = kw["headers"]["Authorization"] == "Bearer good"
+            return httpx.Response(200 if ok else 401, json={} if ok else {"error": {"message": "User not found."}},
+                                  request=httpx.Request("GET", url))
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"data": [
+            {"id": "anthropic/claude-sonnet-5.5", "name": "Anthropic: Claude Sonnet 5.5", "context_length": 1000000,
+             "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+            {"id": "anthropic/claude-sonnet-5.5:batch", "name": "batch"},
+            {"id": "meta/llama-free", "name": "Llama (free)", "context_length": 128000,
+             "pricing": {"prompt": "0", "completion": "0"}}]})
+    monkeypatch.setattr(providers.httpx, "get", get)
+    p = providers.PROVIDERS["openrouter"]
+    with pytest.raises(KeyProblem, match="User not found"):
+        providers.fetch_models(p, "bad")
+    models = providers.fetch_models(p, "good")
+    assert [m.id for m in models] == ["openrouter/anthropic/claude-sonnet-5.5", "openrouter/meta/llama-free"]
+    assert models[0].price == (2, 10) and "1M context" in models[0].describe() and "free" in models[1].describe()
+    assert [m.id for m in providers.search(models, "SONNET anthropic")] == ["openrouter/anthropic/claude-sonnet-5.5"]
+
+
+def test_wizard_key_rejected_then_pasted_again_and_searched(home, monkeypatch, clean_env):
+    tries = []
+
+    def fetch(p, key):
+        tries.append(key)
+        if key != "sk-or-good":
+            raise KeyProblem("the provider didn't accept this key (User not found.)")
+        return [Model(f"openrouter/x/m{i}") for i in range(30)] + [Model("openrouter/z/special", "Special One")]
+    monkeypatch.setattr(wizard, "fetch_models", fetch)
+    monkeypatch.setattr(wizard, "check_model", lambda m: "")
+    monkeypatch.setattr(wizard, "claude_path", lambda: None)
+    ask = Scripted(str(home.root), "keep", "openrouter", "sk-or-bad", "show", "sk-or-good",
+                   "?search", "special", "openrouter/z/special", "no", [])
+    w = make_wizard(ask)
+    assert w.run() == 0 and not ask.answers
+    assert tries == ["sk-or-bad", "sk-or-good"]
+    assert home.worker("main").model == "openrouter/z/special"
+    assert "OPENROUTER_API_KEY=sk-or-good" in home.secrets_file.read_text(encoding="utf-8")
+
+
+def test_price_goes_into_models_yaml(home):
+    wizard.use_model(home, "openrouter/x/priced", (2, 10))
+    assert "price: {in: 2, out: 10}" in home.read("models.yaml")
+
+
+def test_config_one_section_and_menu(home, monkeypatch, clean_env):
+    monkeypatch.setattr(wizard, "fetch_models", lambda p, key: [Model("anthropic/claude-opus-5-5")])
+    monkeypatch.setattr(wizard, "claude_path", lambda: None)
+    monkeypatch.setattr(wizard.service, "status", lambda h: [])
+    ask = Scripted("anthropic", "sk-ant-new-0123456789")
+    assert make_wizard(ask).configure(home, "key") == 0 and not ask.answers
+    assert "ANTHROPIC_API_KEY=sk-ant-new-0123456789" in home.secrets_file.read_text(encoding="utf-8")
+    ask = Scripted("show", "done")
+    w = make_wizard(ask)
+    assert w.configure(home) == 0 and not ask.answers
+    assert "ANTHROPIC_API_KEY (sk-ant…6789)" in w.out.file.getvalue()

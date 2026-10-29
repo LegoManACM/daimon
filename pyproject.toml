@@ -1,6 +1,6 @@
 [project]
 name = "daimon"
-version = "0.1.0"
+version = "0.1.1"
 description = "A background agent driven by markdown it can edit itself"
 requires-python = ">=3.11"
 dependencies = [

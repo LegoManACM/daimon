@@ -38,7 +38,10 @@ You need:
 `daimon setup` walks you through it a step at a time:
 
 1. **Home folder**, where the agent lives (default `~/.daimon`).
-2. **Model.** Pick a provider, paste the key, pick the main model. It checks the key with a tiny request.
+2. **Model.** Pick a provider (Anthropic, OpenAI, OpenRouter, Google Gemini or Ollama) and paste its key. The key
+   shows as dots while you paste, then setup shows its first and last few characters and checks it with the
+   provider. Then pick the main model from the provider's own current list: type to filter what's shown, or search
+   all of them (OpenRouter has hundreds; try `sonnet`, `gpt` or `free`).
 3. **Telegram** (optional). Make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message
    the bot once; setup picks up your chat id itself.
 4. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
@@ -46,8 +49,21 @@ You need:
    through Google Messages. Setup installs them, connects them to the agent and runs their sign-in.
 6. **Background.** Start Daimon at login so it keeps running after you close the terminal.
 
-Run `daimon setup` again any time to change something; what's there is kept. Keys and tokens go in
-`~/.daimon-secrets.env`, outside the agent's folder.
+Keys and tokens go in `~/.daimon-secrets.env`, outside the agent's folder.
+
+### Changing things later
+
+`daimon config` changes one part without going through setup again. With no argument it shows a menu; or name
+the part:
+
+```bash
+daimon config model        # provider and main model
+daimon config key          # replace an API key
+daimon config telegram
+daimon config addons       # Canvas, text messages
+daimon config background   # start at login
+daimon config show         # what's set up now
+```
 
 On Windows, run setup in Windows Terminal, PowerShell or cmd. Git Bash's terminal can't draw the menus.
 
@@ -198,8 +214,9 @@ From a checkout, `daimon setup` installs add-ons editable from `canvas/` and `me
 them. [DESIGN.md](DESIGN.md) has the design, and [RELEASING.md](RELEASING.md) how releases are made.
 
 ```
-daimon/cli.py        daimon setup / init / chat / run / service / inbox, the terminal channel
-daimon/setup/        the setup wizard, add-on installs, start-at-login per OS
+daimon/cli.py        daimon setup / config / init / chat / run / service / inbox, the terminal channel
+daimon/setup/        the setup wizard and config, providers and their model lists, add-on installs,
+                     start-at-login per OS
 daimon/home.py       home folder, frontmatter, secrets, git
 daimon/gate.py       consent levels (auto / notify / ask)
 daimon/mcp_hub.py    MCP connections + per-tool consent

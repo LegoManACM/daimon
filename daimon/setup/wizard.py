@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,34 +16,11 @@ from rich.markup import escape as esc
 
 from ..home import Home, resolve_home
 from . import addons, service
+from .providers import (OLLAMA, PROVIDERS, KeyProblem, Model, Provider, clean_key, fetch_models, masked,
+                        ollama_models, search)
 
-OLLAMA = "http://localhost:11434"
 TELEGRAM_WAIT_S = 120
-
-
-@dataclass
-class Provider:
-    key: str
-    title: str
-    env: str | None      # the secret holding its API key
-    models: list[str]
-    where: str = ""      # where to get a key
-
-
-PROVIDERS = {
-    "anthropic": Provider("anthropic", "Anthropic (Claude)", "ANTHROPIC_API_KEY",
-                          ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5"],
-                          "https://console.anthropic.com/settings/keys"),
-    "openai": Provider("openai", "OpenAI", "OPENAI_API_KEY", ["openai/gpt-5", "openai/gpt-5-mini"],
-                       "https://platform.openai.com/api-keys"),
-    "openrouter": Provider("openrouter", "OpenRouter (many models, one key)", "OPENROUTER_API_KEY",
-                           ["openrouter/anthropic/claude-sonnet-5.5", "openrouter/openai/gpt-5",
-                            "openrouter/google/gemini-2.5-pro"], "https://openrouter.ai/keys"),
-    "gemini": Provider("gemini", "Google Gemini", "GEMINI_API_KEY", ["gemini/gemini-2.5-pro", "gemini/gemini-2.5-flash"],
-                       "https://aistudio.google.com/apikey"),
-    "ollama": Provider("ollama", "Ollama (runs on this computer, free, no key)", None, ["ollama_chat/qwen3.5:9b"],
-                       "https://ollama.com"),
-}
+SHOWN = 15  # models listed at once; search reaches the rest
 
 
 # ---- the work ----------------------------------------------------------------------------------------------
@@ -55,23 +33,18 @@ def check_model(model: str) -> str:
                            timeout=60)
     except Exception as e:  # noqa: BLE001
         lines = str(e).strip().splitlines()
-        return (lines[0] if lines else type(e).__name__)[:300]
+        first = (lines[0] if lines else type(e).__name__)[:300]
+        if re.search(r"AuthenticationError|User not found|invalid.{0,10}api.?key|401", first, re.I):
+            return f"the provider didn't accept the API key ({first})"
+        if re.search(r"NotFoundError|not found|does not exist|404|not a valid model", first, re.I):
+            return f"the provider doesn't have that model ({first})"
+        return first
     return ""
 
 
-def ollama_models(base: str = OLLAMA) -> list[str] | None:
-    """Local Ollama models as LiteLLM ids, or None if Ollama isn't reachable."""
-    try:
-        r = httpx.get(f"{base}/api/tags", timeout=3)
-        r.raise_for_status()
-    except (httpx.HTTPError, ValueError):
-        return None
-    return [f"ollama_chat/{m['name']}" for m in r.json().get("models", [])]
-
-
-def use_model(home: Home, model: str) -> None:
+def use_model(home: Home, model: str, price: tuple[float, float] | None = None) -> None:
     """What `init --model` does: list the model in models.yaml and make it the main worker's."""
-    home._use_model(model)
+    home._use_model(model, price)
     home.commit(f"setup: main model {model}", ["models.yaml", "workers/main.md"])
 
 
@@ -142,6 +115,14 @@ class Ask:
         start = next((c for c in options if c.value == default), None)
         return self.q.select(message, options, default=start, style=self.style).unsafe_ask()
 
+    def pick(self, message: str, choices: list[tuple[str, Any, str]], default: Any = None) -> Any:
+        """A menu whose entries have a description line; typing filters it."""
+        options = [self.q.Choice(title, value, description=desc or None) for title, value, desc in choices]
+        start = next((c for c in options if c.value == default), None)
+        return self.q.select(message, options, default=start, style=self.style, use_search_filter=True,
+                             use_jk_keys=False, show_description=True,
+                             instruction="(arrows to move, type to filter)").unsafe_ask()
+
     def text(self, message: str, default: str = "") -> str:
         return self.q.text(message, default=default, style=self.style).unsafe_ask().strip()
 
@@ -168,24 +149,40 @@ class Done:
 
 class Wizard:
     STEPS = 7
+    SECTIONS = {"model": "Provider and main model", "key": "An API key", "telegram": "Telegram",
+                "claude": "Claude Code", "addons": "Add-ons (Canvas, text messages)",
+                "background": "Running in the background", "show": "Show the current settings"}
 
     def __init__(self, ask, console=None, home_flag: str | None = None):
         from rich.console import Console
         self.ask, self.out = ask, console or Console(highlight=False)
         self.home_flag = home_flag
+        self.history: list[str] = []
+        self.numbered = True  # `daimon config` runs single steps, without the "n/7"
         self.home: Home | None = None
         self.done = Done()
         self.messages_proc: subprocess.Popen | None = None
+        self.models: list[Model] | None = None
 
     # ---- output --------------------------------------------------------------------------------------
+    def top(self) -> None:
+        """A fresh screen for each step, read from the top: the title, then what's done so far."""
+        self.out.clear()
+        self.out.print(f"[bold magenta]Daimon[/] [dim]{'setup' if self.numbered else 'config'}[/]")
+        for line in self.history[-12:]:
+            self.out.print(f"[green]✓[/] {line}")
+
     def step(self, n: int, title: str) -> None:
+        self.top()
         self.out.print()
-        self.out.rule(f"[bold magenta]{n}/{self.STEPS}[/]  [bold]{title}[/]", align="left", style="magenta")
+        label = f"[bold magenta]{n}/{self.STEPS}[/]  [bold]{title}[/]" if self.numbered else f"[bold]{title}[/]"
+        self.out.rule(label, align="left", style="magenta")
 
     def say(self, text: str) -> None:
         self.out.print(text)
 
     def ok(self, text: str) -> None:
+        self.history.append(text)
         self.out.print(f"[green]✓[/] {text}")
 
     def warn(self, text: str) -> None:
@@ -207,15 +204,42 @@ class Wizard:
             self.finish()
         except KeyboardInterrupt:
             self.out.print("\n[yellow]Setup stopped.[/] What's done so far is saved; run [bold]daimon setup[/] "
-                           "again to pick up where you left off.")
+                           "again to pick up where you left off, or [bold]daimon config[/] to change one part.")
             return 1
         return 0
 
+    def configure(self, home: Home, section: str | None = None) -> int:
+        """`daimon config`: change one part of an existing agent, or pick parts from a menu until Done."""
+        self.home, self.numbered = home, False
+        home.load_secrets()
+        try:
+            while True:
+                pick = section or self.ask.select("What do you want to change?",
+                                                  [*((v, k) for k, v in self.SECTIONS.items()), ("Done", "done")])
+                if pick == "done":
+                    return 0
+                self.section(pick)
+                if section:
+                    return 0
+        except KeyboardInterrupt:
+            self.out.print("\n[yellow]Stopped.[/] What's done so far is saved.")
+            return 1
+
+    def section(self, name: str) -> None:
+        if name == "key":
+            self.step(0, "API key")
+            p = PROVIDERS[self.ask.select("Which provider's key?",
+                                          [(v.title, k) for k, v in PROVIDERS.items() if v.env])]
+            self.api_key(p, force=True)
+        else:
+            getattr(self, name)()
+
     def welcome(self) -> None:
+        self.out.clear()
         self.panel("[bold]Daimon[/] is a personal agent that keeps working in the background. Everything it is "
                    "(its instructions, memory, workers and settings) lives in markdown files in one folder, which "
                    "you and it can both edit.\n\nThis takes a few minutes. Use the arrow keys and Enter; Ctrl+C stops "
-                   "at any point, and you can run [bold]daimon setup[/] again later to change anything.",
+                   "at any point. Later, [bold]daimon config[/] changes any one part.",
                    "Welcome")
         self.step(1, "Home folder")
         while True:
@@ -242,8 +266,7 @@ class Wizard:
         p = PROVIDERS[self.ask.select("Which AI provider should the agent use?",
                                       [(v.title, k) for k, v in PROVIDERS.items()],
                                       default=next((k for k in PROVIDERS if current.startswith(k)), "anthropic"))]
-        if p.env:
-            self.api_key(p)
+        self.models = self.api_key(p) if p.env else self.ollama() if p.key == "ollama" else None
         self.step(3, "Main model")
         while True:
             model = self.pick_model(p, current)
@@ -260,45 +283,106 @@ class Wizard:
                                     if p.env else [("Try again", "retry"), ("Pick another model", "model"),
                                                    ("Use it anyway", "keep")])
             if again == "key":
-                self.api_key(p, force=True)
+                self.models = self.api_key(p, force=True) or self.models
             if again == "keep":
                 break
-        use_model(home, model)
+        chosen = next((m for m in self.models or [] if m.id == model), None)
+        use_model(home, model, chosen.price if chosen else None)
         self.done.model = model
-        self.ok(f"Main model: {model} (change it any time in workers/main.md, or ask the agent)")
+        self.ok(f"Main model: {model} (change it with [bold]daimon config model[/], or ask the agent)")
 
-    def api_key(self, p: Provider, force: bool = False) -> None:
-        have = os.environ.get(p.env)
-        if have and not force and self.ask.confirm(f"{p.env} is already set. Keep it?", True):
-            return
-        self.say(f"Get a key at [link={p.where}]{p.where}[/link]. It's typed hidden and saved to the secrets file.")
-        key = self.ask.secret(f"{p.title} API key:")
-        if key:
+    def api_key(self, p: Provider, force: bool = False) -> list[Model] | None:
+        """Get a working key for `p` into the secrets file. Returns the provider's models when the key checked out."""
+        have = os.environ.get(p.env, "")
+        if have and not force and self.ask.confirm(f"{p.env} is already set ({masked(have)}). Keep it?", True):
+            try:
+                with self.out.status(f"Checking the key with {p.title}..."):
+                    return fetch_models(p, have)
+            except KeyProblem as e:
+                self.warn(f"The saved key doesn't work: {esc(str(e))}")
+            except ConnectionError as e:
+                self.warn(f"{esc(str(e))}; the key wasn't checked.")
+                return None
+        self.say(f"Get a key at [link={p.where}]{p.where}[/link]. Paste it with Ctrl+V or a right-click. It shows "
+                 "as dots while you type; you'll see its first and last characters afterwards.")
+        visible = False
+        while True:
+            raw = (self.ask.text if visible else self.ask.secret)(f"{p.title} API key:")
+            key = clean_key(raw, p.env)
+            if not key:
+                choice = self.ask.select("Nothing came through.", [("Paste again", "again"),
+                                                                   ("Paste it where I can see it", "show"),
+                                                                   ("Skip for now", "skip")])
+                if choice == "skip":
+                    self.warn(f"No key saved. Add it later with [bold]daimon config key[/].")
+                    return None
+                visible = choice == "show"
+                continue
+            self.say(f"Got {len(key)} characters: [bold]{esc(masked(key))}[/]")
+            if p.prefix and not key.startswith(p.prefix):
+                self.warn(f"{p.title} keys usually start with {p.prefix}. Check it's the right one.")
+            try:
+                with self.out.status(f"Checking the key with {p.title}..."):
+                    models = fetch_models(p, key)
+            except KeyProblem as e:
+                self.warn(f"{p.title} turned it down: {esc(str(e))}")
+                choice = self.ask.select("What now?", [("Paste it again", "again"),
+                                                       ("Paste it where I can see it", "show"),
+                                                       ("Save it anyway", "save"), ("Skip for now", "skip")])
+                if choice == "skip":
+                    return None
+                if choice != "save":
+                    visible = choice == "show"
+                    continue
+                models = None
+            except ConnectionError as e:
+                self.warn(f"{esc(str(e))}; saving the key without checking it.")
+                models = None
             self.home.set_secret(p.env, key)
-            self.ok(f"Saved {p.env}")
+            self.ok(f"{'Key works. ' if models is not None else ''}Saved {p.env} to the secrets file")
+            return models
+
+    def ollama(self) -> list[Model]:
+        while (local := ollama_models()) is None:
+            self.warn(f"Ollama isn't answering at {OLLAMA}. Install it from https://ollama.com and start it.")
+            if self.ask.select("What now?", [("Check again", "retry"), ("Continue anyway", "go")]) == "go":
+                return []
+        if local:
+            self.ok(f"Ollama is running with {len(local)} model(s)")
         else:
-            self.warn(f"No key given. Add {p.env}=... to {esc(str(self.home.secrets_file))} later.")
+            self.say("[dim]No models pulled yet: run `ollama pull qwen3.5:9b` (or any model) before chatting.[/]")
+        return [Model(m) for m in local]
 
     def pick_model(self, p: Provider, current: str) -> str:
-        models = list(p.models)
-        if p.key == "ollama":
-            while (local := ollama_models()) is None:
-                self.warn(f"Ollama isn't answering at {OLLAMA}. Install it from https://ollama.com and start it.")
-                if self.ask.select("What now?", [("Check again", "retry"), ("Continue anyway", "go")]) == "go":
-                    local = []
-                    break
-            if local:
-                models = local
-                self.ok(f"Ollama is running with {len(local)} model(s)")
-            elif local == []:
-                self.say("[dim]No models pulled yet: run `ollama pull qwen3.5:9b` (or any model) before chatting.[/]")
-        choices = [(m, m) for m in models]
-        if current and current not in models and current.startswith(p.key):
-            choices.insert(0, (f"{current} (current)", current))
-        choices.append(("Type another model id", ""))
-        model = self.ask.select("Main model:", choices, default=current if current in dict(choices).values()
-                                else models[0])
-        return model or self.ask.text("LiteLLM model id (provider/model):")
+        """Pick from the provider's live list (searchable), or its suggestions when the list isn't available."""
+        mine = current if current.startswith(p.key) else ""
+        models = self.models or [Model(m) for m in p.models]
+        if not self.models and p.key != "ollama":
+            self.say("[dim]Couldn't get the provider's model list, so here are some suggestions.[/]")
+        by_id = {m.id: m for m in models}
+        top = [by_id[m] for m in p.models if m in by_id] + [m for m in models if m.id not in p.models]
+        query = ""
+        while True:
+            found = search(models, query) if query else top
+            if query:
+                self.say(f"[dim]{len(found)} match{'' if len(found) == 1 else 'es'} for \"{esc(query)}\"[/]")
+            choices = [(f"{mine} (current)", mine, by_id[mine].describe() if mine in by_id else "")] \
+                if mine and not query else []
+            choices += [(m.id, m.id, m.describe()) for m in found[:SHOWN] if m.id != mine or query]
+            if len(models) > SHOWN or query:
+                choices.append((f"Search all {len(models)} models...", "?search", "by name or id, e.g. sonnet, gpt, free"))
+            if query:
+                choices.append(("Back to the top of the list", "?top", ""))
+            choices.append(("Type a model id", "?type", "any LiteLLM id, like openrouter/<maker>/<model>"))
+            picked = self.ask.pick("Main model:", choices, default=mine or (choices[0][1] if choices else None))
+            if picked == "?search":
+                query = self.ask.text("Search for:")
+            elif picked == "?top":
+                query = ""
+            elif picked == "?type":
+                return self.ask.text("Model id (provider/model):")
+            else:
+                return picked
 
     def telegram(self) -> None:
         home = self.home
@@ -438,7 +522,7 @@ class Wizard:
                  "even with no terminal open.")
         if not has_tg:
             self.warn("Running in the background needs Telegram, so it can reach you and ask before acting. Run "
-                      "`daimon setup` again after adding a bot.")
+                      "`daimon config telegram`, then `daimon config background`.")
             if not messages or not self.ask.confirm("Start just the text messaging service at login?", True):
                 self.close_messages()
                 return
@@ -465,6 +549,31 @@ class Wizard:
             self.say(f"[dim]The messaging service keeps running for now (pid {self.messages_proc.pid}). After a "
                      "restart, start it with `daimon-messages run`.[/]")
 
+    def show(self) -> None:
+        home = self.home
+        self.step(0, "Current settings")
+        chat = os.environ.get("TELEGRAM_CHAT_ID")
+        rows = [("Home folder", str(home.root)), ("Secrets file", str(home.secrets_file)),
+                ("Main model", home.worker("main").model),
+                ("API keys", ", ".join(f"{p.env} ({masked(os.environ[p.env])})" for p in PROVIDERS.values()
+                                       if p.env and os.environ.get(p.env)) or "none"),
+                ("Telegram", ("set up" + (f", chat {chat}" if chat else ", no chat id yet"))
+                 if os.environ.get("TELEGRAM_TOKEN") else "not set up"),
+                ("Claude Code", "ready" if claude_path() else "not installed (optional)"),
+                ("Add-ons", ", ".join(a.title for a in addons.ADDONS.values()
+                                      if a.key in home.mcp().get("mcpServers", {})) or "none"),
+                ("Background", "; ".join(service.status(home)) or "off")]
+        self.out.print(self.table(rows))
+
+    def table(self, rows: list[tuple[str, str]]):
+        from rich.table import Table
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold", no_wrap=True)
+        grid.add_column(overflow="fold")
+        for k, v in rows:
+            grid.add_row(k, esc(v))
+        return grid
+
     def finish(self) -> None:
         home, d = self.home, self.done
         rows = [("Home folder", str(home.root)), ("Secrets file", str(home.secrets_file)),
@@ -475,37 +584,52 @@ class Wizard:
                 ("Background", "running, starts at login" if d.running else
                  "starts at login" if d.background else "off")]
         from rich.console import Group
-        from rich.table import Table
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column(style="bold", no_wrap=True)
-        grid.add_column(overflow="fold")
-        for k, v in rows:
-            grid.add_row(k, esc(v))
+        grid = self.table(rows)
+        self.out.clear()
         if d.running and d.telegram:
             nxt = "Message your bot on Telegram: it's running now."
         elif d.running:
             nxt = "The messaging service is running. Run [bold]daimon chat[/] to talk to your agent."
         else:
             nxt = "Run [bold]daimon chat[/] to talk to your agent."
-        self.panel(Group(grid, f"\n{nxt}\nChange anything later with [bold]daimon setup[/]; background control: "
+        self.panel(Group(grid, f"\n{nxt}\nChange anything later with [bold]daimon config[/]; background control: "
                                "[bold]daimon service status|start|stop[/]."), "Ready", "green")
 
 
-def run(home_flag: str | None = None) -> int:
+def preflight(command: str) -> bool:
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("`daimon setup` asks questions, so it needs an interactive terminal. For scripts, use `daimon init`.")
-        return 1
+        print(f"`{command}` asks questions, so it needs an interactive terminal. For scripts, use `daimon init`.")
+        return False
     if not shutil.which("git"):  # the home folder is a git repo: every change the agent makes is a commit
-        print("Daimon needs git, which keeps the history of everything it changes. Install it, open a new terminal and "
-              "run `daimon setup` again:\n  Windows: winget install Git.Git\n  macOS:   xcode-select --install\n"
+        print(f"Daimon needs git, which keeps the history of everything it changes. Install it, open a new terminal "
+              f"and run `{command}` again:\n  Windows: winget install Git.Git\n  macOS:   xcode-select --install\n"
               "  Linux:   your package manager, e.g. sudo apt install git")
-        return 1
+        return False
+    return True
+
+
+def interactive(command: str, go) -> int:
     try:
-        ask = Ask()
-        return Wizard(ask, home_flag=home_flag).run()
+        return go(Ask())
     except Exception as e:  # noqa: BLE001
         if type(e).__name__ == "NoConsoleScreenBufferError":
-            print("This terminal can't show the setup menus. Run `daimon setup` in Windows Terminal, PowerShell or "
-                  "cmd (or prefix it with `winpty` in Git Bash).")
+            print(f"This terminal can't show the menus. Run `{command}` in Windows Terminal, PowerShell or cmd (or "
+                  "prefix it with `winpty` in Git Bash).")
             return 1
         raise
+
+
+def run(home_flag: str | None = None) -> int:
+    if not preflight("daimon setup"):
+        return 1
+    return interactive("daimon setup", lambda ask: Wizard(ask, home_flag=home_flag).run())
+
+
+def configure(home_flag: str | None = None, section: str | None = None) -> int:
+    home = Home(resolve_home(home_flag))
+    if not home.exists():
+        print(f"No agent at {home.root} yet. Run `daimon setup` to make one.")
+        return 1
+    if not preflight("daimon config"):
+        return 1
+    return interactive("daimon config", lambda ask: Wizard(ask, home_flag=home_flag).configure(home, section))
