@@ -245,6 +245,8 @@ class Scripted:
         return answer
 
     def text(self, message, default=""):
+        # Anything secret must go through secret(), which shows * as it's typed.
+        assert not any(w in message.lower() for w in ("key", "token", "secret", "password")), message
         return self._next(message)
 
     def secret(self, message):
@@ -351,7 +353,7 @@ def test_wizard_key_rejected_then_pasted_again_and_searched(home, monkeypatch, c
     monkeypatch.setattr(wizard, "fetch_models", fetch)
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(home.root), "keep", "home", "openrouter", "sk-or-bad", "show", "sk-or-good",
+    ask = Scripted(str(home.root), "keep", "home", "openrouter", "sk-or-bad", "again", "sk-or-good",
                    "?search", "special", "openrouter/z/special", "no", [])
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers

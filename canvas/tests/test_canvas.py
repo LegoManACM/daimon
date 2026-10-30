@@ -404,3 +404,20 @@ def test_inbox_events_and_feedback(home):
         assert "MATH 2A Calculus | HW 3 | Prof. Ada: Nice work on #3. | id assignment:9:1" in feedback
         assert "Thanks!" not in feedback
     runs(home, calls, transport=more)
+
+
+def test_token_never_printed(monkeypatch, capsys, tmp_path):
+    from daimon_canvas import cli
+    monkeypatch.setattr(cli, "secret_input", lambda prompt: "7~abcdefghijklmnopqrstuvwxyz")
+    monkeypatch.setattr(cli, "check", lambda home, url, token: "Sam, 3 active classes")
+
+    class FakeHome:
+        root = tmp_path
+
+        def save_login(self, url, token):
+            self.saved = (url, token)
+    home = FakeHome()
+    cli.login(home, "school.instructure.com")
+    out = capsys.readouterr().out
+    assert "7~abcdefghijklmnopqrstuvwxyz" not in out and "7~ab…wxyz" in out
+    assert home.saved == ("https://school.instructure.com", "7~abcdefghijklmnopqrstuvwxyz")

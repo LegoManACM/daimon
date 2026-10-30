@@ -56,12 +56,29 @@ def clipboard() -> str:
 
 
 def read_pasted() -> str:
-    lines = []
-    for line in sys.stdin:
-        if not line.strip() and lines:
-            break
-        lines.append(line)
-    return "".join(lines)
+    """A pasted block, ended by an empty line. It holds cookies, so it shows as * like any other secret."""
+    if not sys.stdin.isatty():
+        lines = []
+        for line in sys.stdin:
+            if not line.strip() and lines:
+                break
+            lines.append(line)
+        return "".join(lines)
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+
+    keys = KeyBindings()
+
+    @keys.add("enter")
+    def _(event):  # a pasted block keeps its line breaks; Enter on an empty line finishes it
+        buf = event.current_buffer
+        if buf.text.strip() and not buf.document.current_line.strip():
+            buf.validate_and_handle()
+        else:
+            buf.insert_text("\n")
+    text = PromptSession(key_bindings=keys, multiline=True, is_password=True).prompt("")
+    print(f"Got {len(text.strip())} characters.")
+    return text
 
 
 def read_cookies(cookies_file: str | None) -> dict | None:

@@ -45,7 +45,25 @@ def verify(home: Home, name: str, data: dict) -> list[str]:
 def ask(prompt: str, given: str | None = None, secret: bool = False) -> str:
     if given:
         return given.strip()
-    return (getpass.getpass(prompt) if secret else input(prompt)).strip()
+    if not secret:
+        return input(prompt).strip()
+    value = secret_input(prompt).strip()
+    if value:
+        print(f"Got {len(value)} characters: {masked(value)}")
+    return value
+
+def secret_input(prompt: str) -> str:
+    """Read a secret, showing * for each character (getpass shows nothing at all, which looks broken)."""
+    if not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    from prompt_toolkit import prompt as ask_hidden
+    return ask_hidden(prompt, is_password=True)
+
+
+def masked(secret: str) -> str:
+    """Enough of a secret to recognise it, never enough to use it."""
+    return f"{secret[:4]}…{secret[-4:]}" if len(secret) > 12 else "*" * len(secret)
+
 
 
 def add(home: Home, args: argparse.Namespace) -> int:
@@ -70,7 +88,7 @@ def add(home: Home, args: argparse.Namespace) -> int:
                     client_id, secret = raw["client_id"], raw.get("client_secret", "")
                 else:
                     client_id = ask("Client ID: ")
-                    secret = ask("Client secret (not shown): ", secret=True)
+                    secret = ask("Client secret (shows as *): ", secret=True)
             data = sign_in(client_id, secret or "")
         elif kind == "microsoft":
             from .microsoft import sign_in
@@ -90,7 +108,7 @@ def add(home: Home, args: argparse.Namespace) -> int:
                 url = "https://" + url
             username = ask("Username (usually your email): ", args.username)
             print(f"Password: {how}.")
-            password = ask("Password (not shown): ", secret=True)
+            password = ask("Password (shows as *): ", secret=True)
             data = {"kind": "caldav", "preset": kind, "url": url, "username": username, "password": password,
                     "user": username}
         found = verify(home, name, data)

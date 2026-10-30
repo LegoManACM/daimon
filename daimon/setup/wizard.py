@@ -358,18 +358,16 @@ class Wizard:
                 return None
         self.say(f"Get a key at [link={p.where}]{p.where}[/link]. Paste it with Ctrl+V or a right-click. It shows "
                  "as dots while you type; you'll see its first and last characters afterwards.")
-        visible = False
         while True:
-            raw = (self.ask.text if visible else self.ask.secret)(f"{p.title} API key:")
-            key = clean_key(raw, p.env)
+            key = clean_key(self.ask.secret(f"{p.title} API key:"), p.env)  # a key is never shown as you type it
             if not key:
                 choice = self.ask.select("Nothing came through.", [("Paste again", "again"),
-                                                                   ("Paste it where I can see it", "show"),
+                                                                   ("I'll put it in the secrets file myself", "file"),
                                                                    ("Skip for now", "skip")])
-                if choice == "skip":
-                    self.warn(f"No key saved. Add it later with [bold]daimon config key[/].")
+                if choice != "again":
+                    self.key_by_hand(p) if choice == "file" else \
+                        self.warn("No key saved. Add it later with [bold]daimon config key[/].")
                     return None
-                visible = choice == "show"
                 continue
             self.say(f"Got {len(key)} characters: [bold]{esc(masked(key))}[/]")
             if p.prefix and not key.startswith(p.prefix):
@@ -379,13 +377,14 @@ class Wizard:
                     models = fetch_models(p, key)
             except KeyProblem as e:
                 self.warn(f"{p.title} turned it down: {esc(str(e))}")
-                choice = self.ask.select("What now?", [("Paste it again", "again"),
-                                                       ("Paste it where I can see it", "show"),
-                                                       ("Save it anyway", "save"), ("Skip for now", "skip")])
-                if choice == "skip":
+                choice = self.ask.select("What now?", [("Paste it again", "again"), ("Save it anyway", "save"),
+                                                       ("I'll put it in the secrets file myself", "file"),
+                                                       ("Skip for now", "skip")])
+                if choice in ("skip", "file"):
+                    if choice == "file":
+                        self.key_by_hand(p)
                     return None
-                if choice != "save":
-                    visible = choice == "show"
+                if choice == "again":
                     continue
                 models = None
             except ConnectionError as e:
@@ -394,6 +393,11 @@ class Wizard:
             self.home.set_secret(p.env, key)
             self.ok(f"{'Key works. ' if models is not None else ''}Saved {p.env} to the secrets file")
             return models
+
+    def key_by_hand(self, p: Provider) -> None:
+        """For when pasting into the hidden prompt doesn't work: the key goes straight into the file, never on screen."""
+        self.say(f"Open [bold]{esc(str(self.home.secrets_file))}[/] in a text editor, add a line "
+                 f"[bold]{p.env}=[/][dim]your key[/], and save it. Then run [bold]daimon config key[/] to check it.")
 
     def ollama(self) -> list[Model]:
         while (local := ollama_models()) is None:

@@ -383,3 +383,12 @@ def test_one_account_down_doesnt_hide_the_rest(tmp_path):
 def test_not_set_up(tmp_path):
     [(err, text)] = call(Home(tmp_path / "empty"), World(), ("calendar_events", {}))
     assert err and "daimon-calendar add" in text
+
+
+def test_secrets_are_masked_after_entry(monkeypatch, capsys):
+    from daimon_calendar import cli
+    monkeypatch.setattr(cli, "secret_input", lambda prompt: "  hunter2-very-long-password  ")
+    assert cli.ask("Password (shows as *): ", secret=True) == "hunter2-very-long-password"
+    out = capsys.readouterr().out
+    assert "hunter2-very-long-password" not in out and "hunt…word" in out
+    assert cli.masked("short") == "*****"

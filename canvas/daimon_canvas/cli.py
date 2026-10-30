@@ -23,15 +23,29 @@ def check(home: Home, url: str, token: str) -> str:
     return asyncio.run(go())
 
 
+def secret_input(prompt: str) -> str:
+    """Read a secret, showing * for each character (getpass shows nothing at all, which looks broken)."""
+    if not sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    from prompt_toolkit import prompt as ask_hidden
+    return ask_hidden(prompt, is_password=True)
+
+
+def masked(secret: str) -> str:
+    """Enough of a secret to recognise it, never enough to use it."""
+    return f"{secret[:4]}…{secret[-4:]}" if len(secret) > 12 else "*" * len(secret)
+
+
 def login(home: Home, url: str | None) -> int:
     url = (url or input("Your Canvas address (like https://school.instructure.com): ")).strip().rstrip("/")
     if not url.startswith("http"):
         url = "https://" + url
-    print("Make a token in Canvas: Account → Settings → + New access token. Paste it here (it isn't shown).")
-    token = getpass.getpass("Token: ").strip()
+    print("Make a token in Canvas: Account → Settings → + New access token. Paste it here (it shows as *).")
+    token = secret_input("Token: ").strip()
     if not token:
         print("No token given.")
         return 1
+    print(f"Got {len(token)} characters: {masked(token)}")
     try:
         who = check(home, url, token)
     except Exception as e:  # noqa: BLE001
