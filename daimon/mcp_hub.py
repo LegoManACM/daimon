@@ -122,7 +122,8 @@ class McpHub:
                 transport = stdio_client(params, errlog=errlog)
             else:
                 raise ValueError("needs either 'command' or 'url'")
-            server.client = await stack.enter_async_context(Client(transport, read_timeout_seconds=120))
+            limit = entry.get("timeout_s") or (self.home.config().get("tools") or {}).get("mcp_timeout_s", 900)
+            server.client = await stack.enter_async_context(Client(transport, read_timeout_seconds=float(limit)))
             server.tools = (await server.client.list_tools()).tools
             server.instructions = (server.client.instructions or "").strip()
             server.stack = stack

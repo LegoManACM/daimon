@@ -142,6 +142,14 @@ class Home:
         main = re.sub(r"^model:.*$", f"model: {model}", self.read("workers/main.md"), count=1, flags=re.M)
         self.write("workers/main.md", main)
 
+    def add_missing(self, rel: str) -> bool:
+        """Copy a starter file that a newer Daimon added into a home made before it existed."""
+        if (self.root / rel).exists() or not (TEMPLATES / rel).exists() or not self.exists():
+            return False
+        self.write(rel, (TEMPLATES / rel).read_text(encoding="utf-8"))
+        self.commit(f"init: add {rel}", [rel])
+        return True
+
     def ignore(self, entry: str) -> None:
         path = self.root / ".gitignore"
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []

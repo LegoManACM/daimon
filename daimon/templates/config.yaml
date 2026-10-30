@@ -16,6 +16,29 @@ thread:
 
 tool_result_max_chars: 20000
 
+# How long to wait for models. A local model can take minutes to load into memory the first time; after that
+# it answers fast. A call that fails these limits is retried, then reported with what went wrong.
+model_calls:
+  first_token_timeout_s: 300  # sent → first word back (covers a local model loading)
+  stall_timeout_s: 120        # longest silence in the middle of an answer
+  timeout_s: 600              # a whole answer, when it isn't streamed
+  retries: 2                  # after connection errors, rate limits and timeouts
+  cache: true                 # let Claude cache the prompt between steps (other providers do it on their own)
+  ollama:                     # local models through Ollama (ollama_chat/...)
+    keep_alive: 30m           # keep a model loaded this long after its last use (-1: forever, 0: unload at once)
+    num_ctx: 16384            # context window. Ollama's default is small and cuts long prompts without saying so.
+                              #   Keep it the same everywhere a model is used: Ollama reloads it when it changes.
+                              #   A model's own params (models.yaml) win over this.
+    warm_up: true             # start loading local models before they're needed (at start, before each turn)
+
+# Tool calls. A call still running after `background_after_s` stops holding up the agent: it gets a job id, keeps
+# running, and its result comes back to the agent when it's done (in the same turn if it's still working, or as
+# a new message). The agent can also start any tool as a job itself (start_job) and wait for or cancel jobs.
+tools:
+  background_after_s: 30      # 0: every call waits until it's done (no automatic background jobs)
+  job_max_minutes: 30         # a job still running after this is stopped
+  mcp_timeout_s: 900          # longest an add-on (MCP) tool call may run at all
+
 limits:
   max_concurrent_workers: 3 # or unlimited
   harness:                  # per harness: runs on a subscription share your plan's limits

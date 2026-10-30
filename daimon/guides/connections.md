@@ -30,6 +30,9 @@ add_mcp_server(name="files", reason="read the user's notes folder",
 - New tools default to `auto` if the server marks them read-only, else `ask` (guide `consent`). Tighten the
   risky ones right away if the defaults are too loose.
 - `remove_mcp_server` disconnects it. `"disabled": true` on its entry keeps it but switches it off.
+- A call to one of its tools may take up to `tools.mcp_timeout_s` (config.yaml, default 900s); `"timeout_s": 1800`
+  on its entry changes that for one server. Calls that take more than 30s carry on as background jobs (guide
+  `jobs`), so a long limit doesn't hold you up.
 - Give a worker access by adding the name to its `mcps` list.
 
 ## Secrets

@@ -1,5 +1,5 @@
 ---
-description: which models you and your workers may use (models.yaml), approvals, prices, local models, and the keys they need
+description: which models you and your workers may use (models.yaml), approvals, prices, local models (slow loads, context window), and the keys they need
 ---
 # Models
 
@@ -41,6 +41,15 @@ Rules:
 - Pick by the job: cheap for triage, filing and summaries; standard for most work; premium only when it matters
   and the user agrees. Local models keep data on the computer (good for reading texts) but are weaker.
 - Spend is tracked per call (Runtime shows today's). `limits` in config.yaml caps concurrency (guide `config`).
+
+## Local models
+
+A local model (Ollama: `ollama_chat/...`) loads into memory before its first answer, which can take minutes on a
+slow computer; after that it's fast while it stays loaded. Daimon waits for that (guide `jobs`, "Slow models"),
+keeps it loaded (`model_calls.ollama.keep_alive`) and gives it a big enough context window
+(`model_calls.ollama.num_ctx`). A model's own `params` win over those, e.g.
+`params: {num_ctx: 8192, keep_alive: -1}` for a computer short on memory. When a call fails, the error says
+whether Ollama is down, the model isn't pulled (`ollama pull <name>`), or it was still loading.
 
 ## Harness models are separate
 

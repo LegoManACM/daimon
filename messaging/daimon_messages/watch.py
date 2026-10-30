@@ -83,6 +83,9 @@ SETTINGS_HEADER = """\
 # params: passed to the provider, e.g. {api_base: "http://localhost:11434"}. ${NAME} reads the secrets file.
 # quiet_seconds: wait for a chat to go quiet this long before reading its new texts (a burst is read once).
 # max_checks_per_hour: model calls per hour, across all watchers. Past it, checks wait.
+# timeout_seconds: how long one check may take. A local model loading for the first time can take minutes;
+#   it's started loading as soon as a text is waiting, and kept loaded (keep_alive in the agent's config.yaml).
+#   A check that fails is retried once at once, then the chat is read again 10 minutes later.
 # agent_inbox: the agent's inbox folder ("" = $DAIMON_HOME/inbox, else ~/.daimon/inbox).
 # secrets: env file with API keys ("" = $DAIMON_SECRETS, else ~/.daimon-secrets.env).
 """
@@ -95,6 +98,7 @@ class Settings:
     params: dict[str, Any] = field(default_factory=dict)
     quiet_seconds: int = 90
     max_checks_per_hour: int = 120
+    timeout_seconds: int = 300
     agent_inbox: str = ""
     secrets: str = ""
 
@@ -452,6 +456,8 @@ class Engine:
                 continue
             self.pending.setdefault(msg["chat"], {}).setdefault(w.name, []).append(msg["seq"])
             self.due[msg["chat"]] = time.monotonic() + max(settings.quiet_seconds, 0)
+            if self.judge == self._judge_with_model:  # load a local model during the quiet period
+                self._warm(w.model_for(settings), settings)
         self._save_pending()
 
     async def _read_chat(self, chat_id: str, settings: Settings, force: bool) -> None:
@@ -471,7 +477,7 @@ class Engine:
                     verdict = await self.check(w, chat_id, msgs)
                 except Exception as e:  # noqa: BLE001
                     self.stats["errors"] += 1
-                    self.stats["last_error"] = f"{w.name}: {type(e).__name__}: {e}"[:300]
+                    self.stats["last_error"] = f"{w.name}: {e}"[:500]
                     log.warning("Watcher %s couldn't read %s: %s", w.name, self.store.chat_name(chat_id), e)
                     self.due[chat_id] = time.monotonic() + 600
                     self._save_pending()
@@ -541,7 +547,15 @@ class Engine:
 
     async def _judge_with_model(self, model: str, params: dict, messages: list[dict]) -> dict:
         from .judge import ask
-        return await ask(model, expand(params), messages)
+        settings = self.settings()
+        return await ask(model, expand(params), messages, settings.timeout_seconds, settings.inbox().parent)
+
+    def _warm(self, model: str, settings: Settings) -> None:
+        try:
+            from .judge import warm
+            warm(model, expand(settings.params), settings.inbox().parent)
+        except Exception:  # noqa: BLE001 - only a head start
+            pass
 
     async def fire(self, w: Watcher, chat_id: str, msgs: list[dict], verdict: dict) -> int | None:
         """Keeps the hit and hands it on (wake / inbox / log). Respects cooldown and once."""

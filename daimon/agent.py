@@ -31,7 +31,7 @@ QUIET = "[quiet]"
 
 @dataclass
 class Item:
-    kind: str  # user | wake | routine | report | inbox
+    kind: str  # user | wake | routine | report | inbox | jobs
     text: str
     task_id: str | None = None
     reply: asyncio.Future | None = None  # set for messages whose sender waits for the answer
@@ -53,11 +53,18 @@ class Agent:
         self._reacting: set[asyncio.Task] = set()
         self._reported: set[str] = set()
         self.auto_update = False  # `daimon run` turns it on; updates.auto in config.yaml decides
+        self._jobs_queued = False
+        self.runner.jobs.on_done = self._jobs_done
 
     # ---- lifecycle -----------------------------------------------------------------------------------
     async def start(self, scheduler: bool = True) -> None:
         for task in self.tasks.all(("running",)):  # left running by a previous process
             self.tasks.update(task.id, status="queued", log="restarted after the agent stopped")
+        self.home.add_missing("CONTEXT.md")  # homes made before it existed
+        try:
+            self.runner.warm(self.home.worker("main").model)
+        except Exception:  # noqa: BLE001 - a broken main.md is reported on the first turn
+            pass
         self._background.append(asyncio.create_task(self._main_loop()))
         if scheduler:
             self._background.append(asyncio.create_task(self._scheduler()))
@@ -67,6 +74,7 @@ class Agent:
         running = [*self._background, *self.workers.values(), *self._reacting]
         for t in running:
             t.cancel()
+        self.runner.jobs.cancel_all()
         await asyncio.gather(*running, return_exceptions=True)
         await self.hub.close()
 
@@ -127,9 +135,21 @@ class Agent:
                   "required": ["name"]}, preview_reaction, lambda _a: "auto")]
 
     # ---- main thread ---------------------------------------------------------------------------------
+    def _jobs_done(self, who: str) -> None:
+        """A background job of main's finished after its turn ended: its result starts a new turn."""
+        if who == "main" and not self._jobs_queued:
+            self._jobs_queued = True
+            self.inbox.put_nowait(Item("jobs", ""))
+
     async def _main_loop(self) -> None:
         while True:
             item = await self.inbox.get()
+            if item.kind == "jobs":  # whatever finished by now; a turn in between may have taken them already
+                self._jobs_queued = False
+                limit = int(self.home.config().get("tool_result_max_chars", 20000))
+                item.text = "\n\n".join(j.report(limit) for j in self.runner.jobs.take("main"))
+                if not item.text:
+                    continue
             try:
                 reply = await self.runner.turn(self.thread, self._message(item))
                 if item.kind == "wake" and item.task_id:
@@ -151,7 +171,7 @@ class Agent:
         if item.kind == "user":
             return item.text
         labels = {"wake": "Wake-up you scheduled", "routine": "Routine", "report": "Worker report",
-                  "inbox": "Inbox item"}
+                  "inbox": "Inbox item", "jobs": "Background job finished"}
         return f"[{labels[item.kind]}]\n{item.text}\n\n(Background event: the user didn't send this. Reply " \
                f"with what they should hear, or start your reply with {QUIET} if nothing needs their attention.)"
 

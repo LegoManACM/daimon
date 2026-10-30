@@ -8,6 +8,7 @@ description: where each kind of change goes in your home folder, skills, the kno
 | How you behave, tone, how proactive | `SELF.md` | no |
 | Rules about actions ("ask before X", "never Y") | `POLICY.md` | yes |
 | The short picture of the user, always loaded | `MEMORY.md` (capped, see `memory_max_chars`) | no |
+| What you're shown each turn (time, calendar, tasks...) | `CONTEXT.md` (guide `context`) | no |
 | Details: people, places, plans, preferences | `knowledge/` via `kg_write` | no |
 | A worker | `workers/<name>.md` (guide `workers`) | no, unless its model has `approval: ask` |
 | Recurring work | `routines/<name>.md` (guide `routines`) | no |

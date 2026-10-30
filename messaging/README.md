@@ -104,7 +104,7 @@ fires, it drops a file in the agent's inbox, and the agent decides what to do ne
 | `test_watcher(name, since, chat)` | try it on stored texts without delivering anything |
 | `watcher_hits(name, since)` | what fired lately |
 | `remove_watcher(name)` | delete one (`set_watcher(name, enabled=False)` pauses it) |
-| `watch_settings(model, models, params, quiet_seconds, max_checks_per_hour)` | which model reads texts, and how often |
+| `watch_settings(model, models, params, quiet_seconds, max_checks_per_hour, timeout_seconds)` | which model reads texts, how often, and how long one read may take |
 
 A watcher is a file in `watchers/` that you can edit too:
 
@@ -132,6 +132,13 @@ It can be any LiteLLM model. A local one (`ollama_chat/qwen3.5:9b`) keeps texts 
 (`anthropic/claude-haiku-5-5`, `openai/...`, `openrouter/...`) sends them to that provider. Keys come from
 `~/.daimon-secrets.env`. A watcher can pick its own model only from `models:` in watch.yaml. With no model set,
 only `judge: false` watchers run.
+
+**Local models are slow to start.** The first read after the model was unloaded waits while Ollama loads it,
+which can take minutes. So the model starts loading as soon as a text is waiting (during the quiet period), stays
+loaded for a while after (`model_calls.ollama.keep_alive` in the agent's config.yaml), and a read may take up to
+`timeout_seconds` (default 300) before it's retried once. If it still fails, the error in `messaging_status` says
+why: Ollama isn't running, the model isn't pulled, or it was still loading. Then the chat is read again 10
+minutes later.
 
 A hit's inbox file carries it twice: as text for the agent to read, and as an event in the frontmatter
 (`event: messages.watch_hit`, `data:` with watcher, chat, from, summary, message_ids and the extracted fields

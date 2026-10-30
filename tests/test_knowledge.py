@@ -151,7 +151,7 @@ def test_inbox_to_curator_and_urgent_to_main(home, monkeypatch):
     run(go())
 
 
-def test_worker_prompt_gets_retrieved_knowledge(home, monkeypatch):
+def test_turn_context_gets_retrieved_knowledge(home, monkeypatch):
     Knowledge(home).write("people/sam.md", {"type": "person", "title": "Sam"}, "Sam's birthday is 2026-11-14.",
                           "birthday", source="user")
     home.write("workers/helper.md", "---\ntype: worker\nmodel: test/model\n---\nHelp.\n")
@@ -166,8 +166,11 @@ def test_worker_prompt_gets_retrieved_knowledge(home, monkeypatch):
         try:
             await a.send("Plan Sam's birthday.")
             await until(lambda: "helper" in model.seen)
-            assert "2026-11-14" in model.seen["helper"][0][0]["content"]
-            assert "# Relevant knowledge" in model.seen["main"][0][0]["content"]
+            # In the turn's context, in front of the message, not in the (cacheable) system prompt
+            helper = model.seen["helper"][0]
+            assert "2026-11-14" in helper[1]["content"] and "2026-11-14" not in helper[0]["content"]
+            assert "<turn-context>" in helper[1]["content"]
+            assert "## Relevant knowledge" in model.seen["main"][0][-1]["content"]
         finally:
             await a.stop()
     run(go())

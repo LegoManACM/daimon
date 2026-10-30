@@ -26,9 +26,9 @@ from rich.text import Text
 from .gateway import OnMessage, Prompt
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-ACTIVE = ("waiting", "thinking", "writing", "calling", "tool")
-PHASES = {"waiting": "waiting for the model", "thinking": "thinking", "writing": "writing",
-          "calling": "choosing a tool", "tool": "running"}
+ACTIVE = ("waiting", "loading", "retrying", "thinking", "writing", "calling", "tool")
+PHASES = {"waiting": "waiting for the model", "loading": "loading the model", "retrying": "retrying",
+          "thinking": "thinking", "writing": "writing", "calling": "choosing a tool", "tool": "running"}
 EVENTS = {  # kind: (icon, rich style)
     "tool": ("→", "dim"), "edit": ("✎", "cyan"), "notify": ("•", "dim"), "compact": ("≡", "dim"),
     "thinking": ("…", "dim italic"), "task": ("▸", "green"), "routine": ("⟳", "green"), "error": ("!", "red"),

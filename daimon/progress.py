@@ -3,7 +3,8 @@
 The runner streams each model call and feeds a Meter, which turns chunks into a small state dict and hands it to
 `surface.progress(who, state)` if the surface has that method (channels that don't simply never hear about it):
 
-  phase    waiting (sent, nothing back yet) | thinking (reasoning) | writing | calling (writing tool calls)
+  phase    waiting (sent, nothing back yet) | loading (a local model loading first) | retrying (after an error)
+           | thinking (reasoning) | writing | calling (writing tool calls)
            | tool (running one) | done | idle (the turn or task is over)
   model, started, first_token (time.monotonic()), tokens (estimated while streaming, exact when done),
   tps (output tokens per second since the first one), tail (the end of what it's writing), tool, usd
@@ -38,6 +39,16 @@ class Meter:
             self.report(self.who, dict(self.state))
         except Exception:  # noqa: BLE001 - a display problem must never fail the model call
             pass
+
+    def loading(self) -> None:
+        """A local model that has to load into memory before it can answer."""
+        self.state["phase"] = "loading"
+        self.send()
+
+    def retrying(self, attempt: int) -> None:
+        self.state.update(phase="retrying", attempt=attempt, first_token=None, tokens=0, tail="")
+        self.chars = 0
+        self.send()
 
     def feed(self, reasoning: str = "", text: str = "", tool_call: bool = False) -> None:
         if not (reasoning or text or tool_call):

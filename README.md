@@ -119,6 +119,70 @@ messages service when that add-on is connected. Logs go to `~/.daimon/.cache/dai
 | macOS | LaunchAgents `com.daimon.agent` and `com.daimon.messages` in `~/Library/LaunchAgents` |
 | Linux | systemd user units `daimon.service` and `daimon-messages.service`. Run `loginctl enable-linger` to keep them running while you're logged out |
 
+## What it sees each turn: CONTEXT.md
+
+The agent's standing prompt (SELF.md, POLICY.md, MEMORY.md, its worker file) stays the same from step to step, so
+providers can cache it and a local model keeps it loaded. Anything that changes by itself goes in `CONTEXT.md`
+instead: it's rendered once when a message arrives and put in front of that message. Each message is also stamped
+with when it arrived, so the agent knows the time and how long ago things were said.
+
+`CONTEXT.md` is markdown with `{tags}`, and you and the agent can both edit it. The file explains every tag in a
+comment at the top. In short:
+
+```markdown
+{now}
+
+## Open tasks
+{tasks}
+
+## Today's calendar
+{tool:calendar__calendar_events start=today days=1 | every=10m max=2000}
+
+## Texts from the last 6 hours
+{tool:messages__recent_messages since=6h incoming_only=true | every=5m}
+
+## Relevant knowledge
+{knowledge}
+```
+
+`{tool:...}` runs any tool the agent has whose consent level is `auto` (read-only lookups). `every=` reuses a result
+for a while instead of fetching it every turn, and `max=` caps its size. A tag that fails says so in place and never
+stops the turn. Other tags: `{projects}`, `{spend}`, `{jobs}`, `{events:messages.*}`, `{file:notes/today.md}`. A
+worker can have its own file: add `context: contexts/<name>.md` to its frontmatter.
+
+## Slow models and long tool calls
+
+Local models are slow to start: Ollama loads the model into memory before its first answer, which can take
+minutes, and by default it unloads the model again after 5 idle minutes. Daimon handles this:
+
+- **Generous, two-part timeouts.** A call waits up to 300s for the first word (that covers loading), then 120s for
+  any silence after that, and retries twice. If it still fails, the error says why: Ollama isn't running, the model
+  isn't pulled, or it was still loading.
+- **Ollama stays loaded** for 30 minutes after each use, and gets a 16k context window. Ollama's default window is
+  small, and it silently cuts any prompt that's longer.
+- **Warm-up.** The main agent's local model starts loading when Daimon starts and at the start of each turn. A
+  text watcher's model starts loading as soon as a text is waiting to be read, so it's ready by the time the chat
+  goes quiet.
+- **Background jobs.** A tool call still running after 30s becomes a job: the agent hears its job id right away,
+  keeps working, and gets the result when it's done (in the same turn, or as a new message). A call waiting for
+  your approval counts too. The agent can also start a job itself (`start_job`), and wait for or cancel one
+  (`job_wait`, `job_cancel`).
+- **Prompt caching.** For Claude, the standing prompt and the conversation are marked for caching. Other providers
+  cache a repeated prefix on their own.
+
+All of it is in config.yaml (`model_calls:` and `tools:`, explained in comments there). For example, on a slow
+computer:
+
+```yaml
+model_calls:
+  first_token_timeout_s: 600
+  ollama:
+    keep_alive: -1      # never unload
+    num_ctx: 8192       # less memory
+```
+
+The watchers have their own `timeout_seconds` (default 300) in the messages add-on's watch settings.
+
 ## Knowledge
 
 What the agent learns (people, projects, preferences, plans) goes into markdown notes with YAML frontmatter, linked
@@ -200,7 +264,7 @@ turn it off with `enabled: false`.
 
 | Where | What |
 |---|---|
-| `~/.daimon/` | the agent: SELF.md, POLICY.md, MEMORY.md, workers/, routines/, knowledge/ (unless it lives elsewhere), mcp.json, models.yaml, config.yaml (a git repo) |
+| `~/.daimon/` | the agent: SELF.md, POLICY.md, MEMORY.md, CONTEXT.md, workers/, routines/, knowledge/ (unless it lives elsewhere), mcp.json, models.yaml, config.yaml (a git repo) |
 | `~/.daimon-secrets.env` | API keys and tokens, never committed |
 | `~/.daimon-canvas/`, `~/.daimon-messages/`, `~/.daimon-calendar/` | the add-ons' own folders |
 

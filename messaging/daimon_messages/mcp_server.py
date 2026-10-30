@@ -344,14 +344,15 @@ def build(home: Home, store: Store | None = None) -> MCPServer:
     async def test_watcher(name: str, since: str = "7d", chat: str = "") -> str:
         """Try a watcher on texts already stored, delivering nothing: how many pass its match, and for the newest
         few conversations, whether the model calls them a hit. Use it after set_watcher to tune the match and
-        look_for. Needs the messaging service running."""
+        look_for. Needs the messaging service running. With a local model the first check can take minutes
+        while it loads."""
         try:
             since_iso = when(since or "7d")
         except ValueError as e:
             return str(e)
         try:
             r = await asyncio.to_thread(call, home, "POST", "/watch/test",
-                                        {"name": name, "since": since_iso, "chat": chat}, 600)
+                                        {"name": name, "since": since_iso, "chat": chat}, 900)
         except ServiceDown as e:
             return str(e)
         if r.get("error"):
@@ -395,7 +396,7 @@ def build(home: Home, store: Store | None = None) -> MCPServer:
     @server.tool(annotations=WATCH)
     def watch_settings(model: str | None = None, models: list[str] | None = None, params: dict | None = None,
                        quiet_seconds: int | None = None, max_checks_per_hour: int | None = None,
-                       agent_inbox: str | None = None) -> str:
+                       agent_inbox: str | None = None, timeout_seconds: int | None = None) -> str:
         """Show or change how watchers read texts (only the arguments given change; none just shows them).
 
         model: the LiteLLM model that reads texts for watchers. A local one keeps texts on this computer
@@ -404,10 +405,12 @@ def build(home: Home, store: Store | None = None) -> MCPServer:
         models: other models individual watchers may pick. params: provider options (api_base, ...; ${NAME}
           reads the secrets file). quiet_seconds: how long a chat must be quiet before it's read.
         max_checks_per_hour: cap on model calls. agent_inbox: where hits go (default the agent's inbox folder).
+        timeout_seconds: how long one check may take (default 300; a local model's first load can take minutes).
         """
         s = load_settings(home.watch_settings)
         changes = {"model": model, "models": models, "params": params, "quiet_seconds": quiet_seconds,
-                   "max_checks_per_hour": max_checks_per_hour, "agent_inbox": agent_inbox}
+                   "max_checks_per_hour": max_checks_per_hour, "agent_inbox": agent_inbox,
+                   "timeout_seconds": timeout_seconds}
         changed = [k for k, v in changes.items() if v is not None]
         for k in changed:
             setattr(s, k, changes[k])

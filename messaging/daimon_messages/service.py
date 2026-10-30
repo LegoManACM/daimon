@@ -295,7 +295,7 @@ class Service:
                     length = int(self.headers.get("Content-Length") or 0)
                     body = json.loads(self.rfile.read(length) or b"{}") if length else {}
                     fut = asyncio.run_coroutine_threadsafe(service.handle(method, self.path, body), service.loop)
-                    code, payload = fut.result(timeout=600)
+                    code, payload = fut.result(timeout=900)  # test_watcher on a local model that's loading
                 except Exception as e:  # noqa: BLE001
                     log.exception("Control request failed")
                     code, payload = 500, {"error": str(e)}
