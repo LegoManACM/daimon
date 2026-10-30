@@ -127,6 +127,12 @@ class Gateway:
         for c in self.channels:
             c.event(kind, text)
 
+    def progress(self, who: str, state: dict[str, Any]) -> None:
+        """Live state of a model call or tool (see progress.py), for channels that show it. Others never hear it."""
+        for c in self.channels:
+            if show := getattr(c, "progress", None):
+                show(who, state)
+
     def say(self, text: str) -> None:
         for c in self.channels:
             t = asyncio.create_task(c.send(text))

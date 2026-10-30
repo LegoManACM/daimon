@@ -12,7 +12,7 @@ from typing import Any
 
 from datetime import datetime
 
-from . import gate, inbox, knowledge, reactions, tasktools
+from . import gate, inbox, knowledge, progress, reactions, tasktools
 from .gate import Surface, Tool
 from .harness.run import RateLimited, limit_reason
 from .home import Home, split_frontmatter
@@ -251,7 +251,11 @@ class Agent:
                 raise ValueError(f"no tool named {r.call} (is its MCP server connected?)")
             args = r.render(event.data)
             self.surface.event("tool", f"[{who}] {r.call} {gate.short(args)}")
-            result = await gate.call(tool, args, self.surface, who)
+            progress.tool(self.surface, who, r.call, running=True)
+            try:
+                result = await gate.call(tool, args, self.surface, who)
+            finally:
+                progress.idle(self.surface, who)
             if result.startswith("Error:"):
                 raise RuntimeError(result[6:].strip())
         except asyncio.CancelledError:

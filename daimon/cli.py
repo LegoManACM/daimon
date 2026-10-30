@@ -6,16 +6,14 @@ import asyncio
 import importlib.metadata
 import os
 import sys
-from dataclasses import dataclass
+import time
 
 from . import inbox
 from .agent import Agent
-from .gateway import Gateway, Log, Message, OnMessage, Prompt, configured
+from .gateway import Gateway, Log, Message, configured
 from .home import Home, resolve_home
 from .tasks import OPEN, summary
-
-DIM, BOLD, YELLOW, CYAN, RED, GREEN, RESET = ("\033[2m", "\033[1m", "\033[33m", "\033[36m", "\033[31m", "\033[32m",
-                                              "\033[0m")
+from .terminal import Terminal, console, read_lines, status_table
 
 
 def version() -> str:
@@ -23,76 +21,6 @@ def version() -> str:
         return importlib.metadata.version("daimon")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
-
-
-@dataclass
-class Pending:
-    prompt: Prompt
-    answer: asyncio.Future
-
-
-class Terminal:
-    """The terminal channel. While chatting, approvals queue up and the next line you type answers the oldest one,
-    so background workers never fight you for the prompt. In one-shot mode it just asks inline."""
-
-    name = "terminal"
-
-    def __init__(self, interactive: bool):
-        self.interactive = interactive
-        self.pending: list[Pending] = []
-        self.on_message: OnMessage | None = None
-
-    async def connect(self, on_message: OnMessage) -> None:
-        self.on_message = on_message
-
-    async def close(self) -> None:
-        pass
-
-    async def prompt(self, prompt: Prompt) -> str:
-        if not self.interactive:
-            self._show(prompt)
-            return await asyncio.to_thread(input, f"{YELLOW}> {RESET}")
-        p = Pending(prompt, asyncio.get_running_loop().create_future())
-        self.pending.append(p)
-        if len(self.pending) == 1:
-            self._show(prompt)
-        try:
-            return await p.answer
-        except asyncio.CancelledError:  # answered on another channel
-            if p in self.pending:
-                first = self.pending[0] is p
-                self.pending.remove(p)
-                print(f"{DIM}({prompt.title}: answered elsewhere){RESET}")
-                if first and self.pending:
-                    self._show(self.pending[0].prompt)
-            raise
-
-    @staticmethod
-    def _show(p: Prompt) -> None:
-        print(f"\n{YELLOW}{BOLD}Approve?{RESET}{YELLOW} {p.title}{RESET}{DIM}  ({p.who}){RESET}")
-        for k, v in p.details.items():
-            print(f"  {DIM}{k}:{RESET} " + v.replace("\n", "\n    "))
-        options = " / ".join(f"[{v}]{label[len(v):].lower()}" if label.lower().startswith(v) else f"[{v}] {label}"
-                             for v, label in p.options)
-        print(f"{YELLOW}{options}" + (" / or type a reply" if p.free_text else "") + RESET)
-
-    def answer_oldest(self, line: str) -> None:
-        p = self.pending.pop(0)
-        p.answer.set_result(line)
-        if self.pending:
-            self._show(self.pending[0].prompt)
-
-    def event(self, kind: str, text: str) -> None:
-        icon = {"tool": "→", "edit": "✎", "notify": "•", "compact": "≡", "thinking": "…", "task": "▸",
-                "routine": "⟳", "error": "!"}.get(kind, "·")
-        color = {"edit": CYAN, "error": RED, "task": GREEN, "routine": GREEN}.get(kind, DIM)
-        print(f"{color}{icon} {text}{RESET}")
-
-    async def send(self, text: str) -> None:
-        if text.startswith("Model call failed:"):
-            print(f"{RED}{text}{RESET}")
-        else:
-            print(f"\n{BOLD}agent>{RESET} {text}")
 
 
 def open_home(args: argparse.Namespace) -> Home:
@@ -198,36 +126,34 @@ async def start(home: Home, channels: list) -> tuple[Agent, Gateway]:
     return agent, gateway
 
 
-async def read_lines():
-    """Yield lines from the terminal. prompt_toolkit keeps the prompt intact while background output prints."""
-    if sys.stdin.isatty():
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.patch_stdout import patch_stdout
-        session = PromptSession()
-        with patch_stdout():
-            while True:
-                try:
-                    yield await session.prompt_async("you> ")
-                except (EOFError, KeyboardInterrupt):
-                    return
-    else:
-        while True:
-            line = await asyncio.to_thread(sys.stdin.readline)
-            if not line:
-                return
-            yield line.rstrip("\n")
+def summary_line(agent: Agent):
+    """The status bar's last line: open tasks and today's spend. Spend means reading a log, so it's cached."""
+    cache = {"at": 0.0, "text": ""}
+
+    def line() -> str:
+        if time.monotonic() - cache["at"] > 5:
+            open_tasks = len(agent.tasks.all(OPEN))
+            cache["text"] = "  ·  ".join(b for b in [
+                f"{open_tasks} open task{'s' if open_tasks != 1 else ''}" if open_tasks else "",
+                f"${agent.runner.spend_today():.2f} today", "/status · /help"] if b)
+            cache["at"] = time.monotonic()
+        return cache["text"]
+    return line
 
 
 async def chat(home: Home) -> None:
     lock = hold_lock(home)
     terminal = Terminal(interactive=True)
     agent, gateway = await start(home, [terminal, *configured(home)])
+    terminal.summary = summary_line(agent)
     others = ", ".join(c.name for c in gateway.channels if c is not terminal)
-    print(f"{DIM}Your agent is running ({home.root}). It keeps working in the background while this is open"
-          f"{f' and answers on {others}' if others else ''}. /help for commands.{RESET}")
+    out = console()
+    out.print(f"[bold magenta]◆ daimon[/] [dim]{version()} · {home.worker('main').model} · {home.root}[/]")
+    out.print(f"[dim]It keeps working in the background while this is open"
+              f"{f' and answers on {others}' if others else ''}. /help for commands, /status for what's running.[/]")
     replies: set[asyncio.Task] = set()
     try:
-        async for line in read_lines():
+        async for line in read_lines(terminal):
             text = line.strip()
             if terminal.pending:
                 terminal.answer_oldest(text)
@@ -279,6 +205,7 @@ async def ask(home: Home, message: str) -> None:
 
 
 HELP = """/help       this list
+/status     what's running and waiting
 /tasks      open tasks (/tasks all for everything)
 /kg QUERY   search the knowledge graph
 /tools      MCP servers and tool consent levels
@@ -296,6 +223,8 @@ async def command(text: str, agent: Agent) -> bool:
         return False
     if cmd == "/help":
         print(HELP)
+    elif cmd == "/status":
+        console().print(status_table(agent))
     elif cmd == "/tasks":
         print(summary(agent.tasks.all(None if parts[1:2] == ["all"] else OPEN)))
     elif cmd == "/kg":

@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import litellm
 
-from . import gate, guide, knowledge, reactions, selftools
+from . import gate, guide, knowledge, progress, reactions, selftools
 from .harness import describe as harness_list
 from .harness import run as harness
 from .gate import Surface, Tool
@@ -161,17 +161,43 @@ class Runner:
         return expand_secrets(entry.get("params") or {})
 
     async def complete(self, model: str, messages: list[dict], tools: list[dict] | None, worker: str) -> Any:
+        report = progress.reporter(self.surface)
+        stream = report is not None and self.home.config().get("stream", True)
+        meter = progress.Meter(report, progress.WHO.get(), model) if stream else None
         try:
             params = {"num_retries": 2, **self.model_params(model)}
-            resp = await litellm.acompletion(model=model, messages=messages, tools=tools or None, **params)
+            if meter:
+                resp = await self.streamed(model, messages, tools, params, meter)
+            else:
+                resp = await litellm.acompletion(model=model, messages=messages, tools=tools or None, **params)
         except ModelError:
             raise
         except Exception as e:
             raise ModelError(f"{type(e).__name__}: {e}") from e
-        self.record_spend(resp, model, worker)
+        usd = self.record_spend(resp, model, worker)
+        if meter:
+            meter.done(getattr(resp, "usage", None), usd)
         return resp
 
-    def record_spend(self, resp: Any, model: str, worker: str) -> None:
+    @staticmethod
+    async def streamed(model: str, messages: list[dict], tools: list[dict] | None, params: dict,
+                       meter: progress.Meter) -> Any:
+        """A streamed call, fed to the meter as it arrives, rebuilt into the same response a plain call returns."""
+        chunks = []
+        stream = await litellm.acompletion(model=model, messages=messages, tools=tools or None, stream=True,
+                                           stream_options={"include_usage": True}, **params)
+        async for chunk in stream:
+            chunks.append(chunk)
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is not None:
+                meter.feed(getattr(delta, "reasoning_content", None) or "", delta.content or "",
+                           bool(getattr(delta, "tool_calls", None)))
+        resp = litellm.stream_chunk_builder(chunks, messages=messages) if chunks else None
+        if resp is None:
+            raise ModelError("the model's stream ended without a response")
+        return resp
+
+    def record_spend(self, resp: Any, model: str, worker: str) -> float:
         usage = getattr(resp, "usage", None)
         try:
             cost = litellm.completion_cost(completion_response=resp) or 0.0
@@ -185,6 +211,7 @@ class Runner:
             f.write(json.dumps({"ts": time.time(), "worker": worker, "model": model, "usd": cost,
                                 "in": getattr(usage, "prompt_tokens", 0), "out": getattr(usage, "completion_tokens", 0)})
                     + "\n")
+        return cost
 
     def spend_today(self) -> float:
         path = self.home.cache / "spend.jsonl"
@@ -215,6 +242,15 @@ class Runner:
     # ---- the loop ------------------------------------------------------------------------------------
     async def loop(self, thread: Thread, load: Callable[[], Worker], tools_for: Callable[[Worker], Any],
                    prompt_for: Callable[[Worker], str], who: str, stop: Callable[[], bool] = lambda: False) -> str:
+        token = progress.WHO.set(who)
+        try:
+            return await self._loop(thread, load, tools_for, prompt_for, who, stop)
+        finally:
+            progress.WHO.reset(token)
+            progress.idle(self.surface, who)
+
+    async def _loop(self, thread: Thread, load: Callable[[], Worker], tools_for: Callable[[Worker], Any],
+                    prompt_for: Callable[[Worker], str], who: str, stop: Callable[[], bool]) -> str:
         cfg = self.home.config()
         reply, retried_empty = "", False
         for _step in range(int(cfg.get("max_steps_per_turn", 30))):
@@ -264,7 +300,11 @@ class Runner:
         except json.JSONDecodeError as e:
             return f"Error: arguments weren't valid JSON ({e})."
         self.surface.event("tool", f"{'' if who == 'main' else f'[{who}] '}{name} {gate.short(args)}")
-        return await gate.call(tool, args, self.surface, who)
+        progress.tool(self.surface, who, name, running=True)
+        try:
+            return await gate.call(tool, args, self.surface, who)
+        finally:
+            progress.tool(self.surface, who, name, running=False)
 
     async def turn(self, thread: Thread, user_text: str) -> str:
         """One message to the main agent (from the user, or an inbox event) and its full response."""
@@ -282,7 +322,12 @@ class Runner:
         """Run (or continue) a worker's task. Returns (status, text): done/result or waiting/question."""
         worker = self.home.worker(task.worker)
         if worker.meta.get("harness") not in (None, "", "native"):
-            return await harness.run_task(self, task, worker, self.projects)
+            who = f"{task.worker} · {task.id}"
+            progress.tool(self.surface, who, f"{worker.meta['harness']} (external agent)", running=True)
+            try:
+                return await harness.run_task(self, task, worker, self.projects)
+            finally:
+                progress.idle(self.surface, who)
         thread = task_thread(self.home, task.id)
         if not thread.messages:
             due = f"\n\nDue: {task.meta['due']}" if task.meta.get("due") else ""
