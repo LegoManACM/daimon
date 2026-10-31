@@ -380,6 +380,19 @@ def test_config_one_section_and_menu(home, monkeypatch, clean_env):
     assert "ANTHROPIC_API_KEY (sk-ant…6789)" in w.out.file.getvalue()
 
 
+def test_config_one_addon_leaves_the_others_alone(home, monkeypatch, clean_env):
+    ran = []
+    monkeypatch.setattr(wizard.addons, "installed", lambda a: True)
+    monkeypatch.setattr(wizard.addons, "run_interactive", lambda argv: ran.append(argv[2:]) or 0)
+    data = home.mcp()
+    data["mcpServers"].update({"canvas": {"command": "x"}, "messages": {"command": "x"}, "calendar": {"command": "x"}})
+    home.write_mcp(data)
+    ask = Scripted("calendar", "google", "done")
+    w = make_wizard(ask)
+    assert w.configure(home, "addons") == 0 and not ask.answers
+    assert ran == [["daimon_calendar", "add", "google"]]  # no Canvas login, no phone pairing
+
+
 def test_knowledge_folder_elsewhere(home, tmp_path, monkeypatch, clean_env):
     shared = tmp_path / "vault"
     (shared / "people").mkdir(parents=True)

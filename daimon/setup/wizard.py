@@ -522,30 +522,42 @@ class Wizard:
                      "[link=https://claude.com/claude-code]https://claude.com/claude-code[/link], run `claude` once "
                      "to log in, and restart the agent.")
 
+    AGAIN = {"canvas": "log in again", "messages": "pair your phone again", "calendar": "add another calendar"}
+
     def addons(self) -> None:
+        """Setup offers them all at once; `daimon config addons` works on one at a time, so changing one never
+        means redoing the others."""
         home = self.home
         self.step(7, "Add-ons")
+        if not self.numbered:
+            while True:
+                servers = home.mcp().get("mcpServers", {})
+                pick = self.ask.select("Which add-on?", [
+                    *((f"{a.title}: {self.AGAIN[a.key]}" if a.key in servers else f"{a.title}: set up ({a.blurb})",
+                       a.key) for a in addons.ADDONS.values()), ("Done", "done")])
+                if pick == "done":
+                    return
+                self.addon(addons.ADDONS[pick])
         servers = home.mcp().get("mcpServers", {})
-        picked = self.ask.checkbox("Add-ons to set up (Space to tick, Enter to go on):",
-                                   [(f"{a.title}: {a.blurb}", a.key, a.key in servers) for a in addons.ADDONS.values()])
+        picked = self.ask.checkbox("Add-ons to set up (Space to tick, Enter to go on):", [
+            (f"{a.title}: {a.blurb}" + (" [already added: tick to set it up again]" if a.key in servers else ""),
+             a.key, False) for a in addons.ADDONS.values()])
         for key in picked:
-            a = addons.ADDONS[key]
-            self.say(f"\n[bold]{a.title}[/]")
-            if not addons.installed(a):
-                while problem := addons.install(a):
-                    self.warn(f"Installing {a.dist} failed: {esc(problem)}")
-                    if self.ask.select("What now?", [("Try again", "retry"), ("Skip it", "skip")]) == "skip":
-                        self.say(f"[dim]To retry later: {esc(' '.join(addons.install_command(a)))}[/]")
-                        break
-                if problem:
-                    continue
+            self.addon(addons.ADDONS[key])
+
+    def addon(self, a: addons.Addon) -> None:
+        self.say(f"\n[bold]{a.title}[/]")
+        if not addons.installed(a):
+            while problem := addons.install(a):
+                self.warn(f"Installing {a.dist} failed: {esc(problem)}")
+                if self.ask.select("What now?", [("Try again", "retry"), ("Skip it", "skip")]) == "skip":
+                    self.say(f"[dim]To retry later: {esc(' '.join(addons.install_command(a)))}[/]")
+                    return
             self.ok(f"{a.dist} installed")
-            if addons.add_server(home, a):
-                self.ok(f"Added the \"{a.key}\" server to mcp.json")
-            else:
-                self.say(f"[dim]mcp.json already has a \"{a.key}\" server; left as it is.[/]")
-            if self.setup_addon(a):
-                self.done.addons.append(key)
+        if addons.add_server(self.home, a):
+            self.ok(f"Added the \"{a.key}\" server to mcp.json")
+        if self.setup_addon(a):
+            self.done.addons.append(a.key)
 
     def setup_addon(self, a: addons.Addon) -> bool:
         py = sys.executable
