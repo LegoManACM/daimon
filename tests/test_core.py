@@ -147,6 +147,38 @@ def test_mcp_hub_levels_and_always(home):
     run(go())
 
 
+def test_mcp_hub_survives_a_broken_server(home, monkeypatch):
+    """A server that dies on start (like `docker mcp` without the plugin) must not take the others down, and
+    changing mcp.json afterwards must reconnect the rest instead of leaving the hub stuck. What it printed is
+    part of the error, so the agent can see why."""
+    monkeypatch.setenv("PROGRAMDATA", "C:/ProgramData")
+    monkeypatch.setenv("SOME_API_KEY", "secret")
+    broken = ("import os, sys; sys.stderr.write('unknown flag: --profile ' + os.environ.get('PROGRAMDATA', '-') "
+              "+ ' ' + os.environ.get('SOME_API_KEY', 'no-secret')); sys.exit(1)")
+
+    async def go():
+        data = home.mcp()
+        data["mcpServers"] = {"a": {"command": sys.executable, "args": [DEMO]},
+                              "broken": {"command": sys.executable, "args": ["-c", broken]},
+                              "b": {"command": sys.executable, "args": [DEMO]}}
+        home.write_mcp(data)
+        hub = McpHub(home)
+        try:
+            await asyncio.wait_for(hub.sync(), 30)
+            assert not hub.servers["a"].error and not hub.servers["b"].error
+            assert "It said: unknown flag: --profile C:/ProgramData no-secret" in hub.servers["broken"].error
+            del data["mcpServers"]["broken"]
+            home.write_mcp(data)
+            await asyncio.wait_for(hub.sync(), 30)
+            assert hub.status() == ["a: connected, 2 tools", "b: connected, 2 tools"]
+            tools = {t.name: t for t in hub.tools()}
+            assert (await tools["b__get_weather"].run({"city": "Oslo"})).startswith("Oslo")
+            await asyncio.wait_for(hub.sync(), 5)  # and it keeps answering
+        finally:
+            await asyncio.wait_for(hub.close(), 30)
+    run(go())
+
+
 def test_thread_repair_and_compact(tmp_path):
     th = Thread(tmp_path / "t")
     th.append({"role": "user", "content": "hi"})

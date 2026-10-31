@@ -11,13 +11,15 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import os
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mcp import Client, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
@@ -27,14 +29,29 @@ from .home import Home, expand_secrets
 NOT_CONNECTION = {"consent", "disabled", "description"}
 
 
+# What a command-line server inherits besides the mcp library's minimal set (PATH, USERPROFILE...): where
+# programs are installed and how they find their config. Without these, e.g. `docker mcp` can't find its plugin
+# on Windows. The rest of the environment holds the secrets file's keys, which servers only get by name, in
+# their entry's "env" (as "${NAME}").
+SYSTEM_ENV = ("PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "COMMONPROGRAMFILES",
+              "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432", "ALLUSERSPROFILE", "PUBLIC", "WINDIR", "COMSPEC",
+              "TMP", "TMPDIR", "OS", "COMPUTERNAME", "NUMBER_OF_PROCESSORS", "HOME", "SHELL", "LANG", "LC_ALL",
+              "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+              "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+LOG_TAIL = 600   # chars of a failed server's own output shown with its error
+CONNECT_S = 120  # a server that hasn't answered by then counts as failed (per server: "connect_timeout_s")
+CLOSE_S = 10
+
+
 @dataclass
 class Server:
     name: str
-    stack: AsyncExitStack | None = None
     client: Client | None = None
     tools: list[Any] = field(default_factory=list)
     error: str = ""
     instructions: str = ""  # what the server says about itself; an "Events:" part lists the events it sends
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task | None = None
 
     def overview(self) -> str:
         """The instructions without the events list (that part is read on demand, with the guide tool)."""
@@ -48,6 +65,17 @@ class Server:
 EVENTS = re.compile(r"^Events:[ \t]*$", re.M)  # add-ons end their instructions with this line and the list
 
 
+def _since(log: Path, offset: int) -> str:
+    """What a command-line server wrote to its log since it was started: usually why it didn't."""
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            f.seek(offset)
+            text = f.read().strip()
+    except OSError:
+        return ""
+    return ("…" + text[-LOG_TAIL:]) if len(text) > LOG_TAIL else text
+
+
 def tool_name(server: str, tool: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", f"{server}__{tool}")[:64]
 
@@ -57,93 +85,88 @@ class McpHub:
         self.home = home
         self.servers: dict[str, Server] = {}
         self._signature = None
-        self._requests: asyncio.Queue | None = None
-        self._owner: asyncio.Task | None = None
-
-    # Connections live inside anyio cancel scopes, which must be closed by the task that opened them. Workers
-    # run in their own tasks, so every connect/close goes through one owner task.
-    async def _request(self, op: str) -> None:
-        if self._owner is None:
-            if op == "close":
-                return
-            self._requests = asyncio.Queue()
-            self._owner = asyncio.create_task(self._own())
-        done = asyncio.get_running_loop().create_future()
-        await self._requests.put((op, done))
-        await done
-
-    async def _own(self) -> None:
-        while True:
-            op, done = await self._requests.get()
-            try:
-                await (self._sync() if op == "sync" else self._close())
-                if not done.done():  # the requester may have been cancelled meanwhile (agent stopping mid-turn)
-                    done.set_result(None)
-            except BaseException as e:  # noqa: BLE001
-                if not done.done():
-                    done.set_exception(e)
-            if op == "close":
-                return
+        self._lock = asyncio.Lock()
 
     async def sync(self) -> None:
         """Reconnect if the server list changed. Called before every model call, so the agent's own edits to
         mcp.json take effect immediately. Consent rules are read per call and don't trigger reconnects."""
-        await self._request("sync")
+        async with self._lock:
+            entries = self.home.mcp().get("mcpServers", {})
+            signature = json.dumps({n: {k: v for k, v in e.items() if k not in NOT_CONNECTION}
+                                    for n, e in entries.items() if not e.get("disabled")}, sort_keys=True)
+            if signature == self._signature:
+                return
+            await self._close()
+            self._signature = signature
+            names = [n for n, e in entries.items() if not e.get("disabled")]
+            servers = await asyncio.gather(*(self._connect(n, entries[n]) for n in names))
+            self.servers = dict(zip(names, servers))
 
     async def close(self) -> None:
-        await self._request("close")
-        self._owner = None
+        async with self._lock:
+            await self._close()
 
-    async def _sync(self) -> None:
-        entries = self.home.mcp().get("mcpServers", {})
-        signature = json.dumps({n: {k: v for k, v in e.items() if k not in NOT_CONNECTION}
-                                for n, e in entries.items() if not e.get("disabled")}, sort_keys=True)
-        if signature == self._signature:
-            return
-        await self._close()
-        self._signature = signature
-        for name, entry in entries.items():
-            if not entry.get("disabled"):
-                self.servers[name] = await self._connect(name, entry)
-
+    # A connection lives inside anyio cancel scopes, which must be closed by the task that opened them, in
+    # order. So each server gets a task of its own that opens the connection, holds it until told to stop and
+    # closes it: one server failing or closing can't cancel another, or whoever asked for the sync.
     async def _connect(self, name: str, entry: dict[str, Any]) -> Server:
         server = Server(name)
-        stack = AsyncExitStack()
+        ready = asyncio.get_running_loop().create_future()
+        server.task = asyncio.create_task(self._hold(server, entry, ready), name=f"mcp-{name}")
         try:
-            entry = expand_secrets(entry)
-            if entry.get("url"):
-                http = create_mcp_http_client(headers=entry.get("headers") or None)
-                transport = streamable_http_client(entry["url"], http_client=http)
-            elif entry.get("command"):
-                self.home.cache.mkdir(exist_ok=True)
-                errlog = stack.enter_context(open(self.home.cache / f"mcp-{name}.log", "a", encoding="utf-8"))
-                params = StdioServerParameters(command=entry["command"], args=entry.get("args", []),
-                                               env=entry.get("env") or None, cwd=entry.get("cwd"))
-                transport = stdio_client(params, errlog=errlog)
-            else:
-                raise ValueError("needs either 'command' or 'url'")
-            limit = entry.get("timeout_s") or (self.home.config().get("tools") or {}).get("mcp_timeout_s", 900)
-            server.client = await stack.enter_async_context(Client(transport, read_timeout_seconds=float(limit)))
-            server.tools = (await server.client.list_tools()).tools
-            server.instructions = (server.client.instructions or "").strip()
-            server.stack = stack
-        except BaseException as e:  # noqa: BLE001 - one bad server must not take the agent down
-            server.error = f"{type(e).__name__}: {e}"
-            try:
-                await stack.aclose()
-            except BaseException:  # noqa: BLE001
-                pass
+            await asyncio.wait_for(asyncio.shield(ready), float(entry.get("connect_timeout_s") or CONNECT_S))
+        except TimeoutError:
+            server.error = f"didn't answer within {entry.get('connect_timeout_s') or CONNECT_S}s"
+            server.task.cancel()
         return server
+
+    async def _hold(self, server: Server, entry: dict[str, Any], ready: asyncio.Future) -> None:
+        log, logged_from = self.home.cache / f"mcp-{server.name}.log", 0
+        try:
+            async with AsyncExitStack() as stack:
+                entry = expand_secrets(entry)
+                if entry.get("url"):
+                    http = create_mcp_http_client(headers=entry.get("headers") or None)
+                    transport = streamable_http_client(entry["url"], http_client=http)
+                elif entry.get("command"):
+                    self.home.cache.mkdir(exist_ok=True)
+                    logged_from = log.stat().st_size if log.exists() else 0
+                    errlog = stack.enter_context(open(log, "a", encoding="utf-8"))
+                    env = {**get_default_environment(), **{k: os.environ[k] for k in SYSTEM_ENV if k in os.environ},
+                           **(entry.get("env") or {})}
+                    params = StdioServerParameters(command=entry["command"], args=entry.get("args", []),
+                                                   env=env, cwd=entry.get("cwd"))
+                    transport = stdio_client(params, errlog=errlog)
+                else:
+                    raise ValueError("needs either 'command' or 'url'")
+                limit = entry.get("timeout_s") or (self.home.config().get("tools") or {}).get("mcp_timeout_s", 900)
+                client = await stack.enter_async_context(Client(transport, read_timeout_seconds=float(limit)))
+                server.tools = (await client.list_tools()).tools
+                server.instructions = (client.instructions or "").strip()
+                server.client = client
+                ready.set_result(None)
+                await server.stop.wait()
+        except BaseException as e:  # noqa: BLE001 - one bad server must not take the agent down
+            if not server.stop.is_set():
+                server.error = f"{type(e).__name__}: {e}" if not ready.done() else f"disconnected: {type(e).__name__}: {e}"
+                said = _since(log, logged_from)
+                if said:
+                    server.error += f"\n  It said: {said}"
+        finally:
+            if not ready.done():
+                ready.set_result(None)
 
     async def _close(self) -> None:
         self._signature = None
-        for server in self.servers.values():
-            if server.stack:
-                try:
-                    await server.stack.aclose()
-                except BaseException:  # noqa: BLE001
-                    pass
-        self.servers.clear()
+        servers, self.servers = list(self.servers.values()), {}
+        for server in servers:
+            server.stop.set()
+        tasks = [s.task for s in servers if s.task]
+        if tasks:
+            _, slow = await asyncio.wait(tasks, timeout=CLOSE_S)
+            for t in slow:
+                t.cancel()
+            await asyncio.gather(*slow, return_exceptions=True)
 
     # ---- consent -----------------------------------------------------------------------------------
     def level(self, server: str, tool: Any) -> str:
