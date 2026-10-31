@@ -24,11 +24,40 @@ def check(home: Home, url: str, token: str) -> str:
 
 
 def secret_input(prompt: str) -> str:
-    """Read a secret, showing * for each character (getpass shows nothing at all, which looks broken)."""
+    """Read a secret, showing * for each character (getpass shows nothing at all, which looks broken).
+
+    Some terminals don't pass a paste through to a hidden prompt, so Ctrl+V reads the clipboard itself, and
+    Enter with nothing typed takes what's on the clipboard."""
     if not sys.stdin.isatty():
         return getpass.getpass(prompt)
     from prompt_toolkit import prompt as ask_hidden
-    return ask_hidden(prompt, is_password=True)
+    from prompt_toolkit.key_binding import KeyBindings
+
+    keys = KeyBindings()
+
+    @keys.add("c-v")
+    def _(event):
+        event.current_buffer.insert_text(clipboard().strip())
+    print("(Paste with Ctrl+V or a right-click, or just press Enter to use what you copied.)")
+    value = ask_hidden(prompt, is_password=True, key_bindings=keys)
+    if not value.strip() and (copied := clipboard().strip()) and "\n" not in copied:
+        print("Using what you copied.")
+        return copied
+    return value
+
+
+def clipboard() -> str:
+    """The clipboard's text, or '' if it can't be read (no display, no Tk)."""
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            return root.clipboard_get()
+        finally:
+            root.destroy()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def masked(secret: str) -> str:

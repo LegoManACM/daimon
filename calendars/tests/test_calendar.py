@@ -392,3 +392,22 @@ def test_secrets_are_masked_after_entry(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "hunter2-very-long-password" not in out and "hunt…word" in out
     assert cli.masked("short") == "*****"
+
+
+@pytest.mark.parametrize("keys, copied, expected", [
+    ("\x16\r", "  pasted-secret \n", "pasted-secret"),  # Ctrl+V reads the clipboard itself
+    ("\r", "copied-secret", "copied-secret"),          # Enter with nothing typed takes what's copied
+    ("typed\r", "copied-secret", "typed"),             # what's typed wins
+    ("\r", "two\nlines", ""),                          # never a block of text
+])
+def test_secret_prompt_pastes_from_the_clipboard(monkeypatch, keys, copied, expected):
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from daimon_calendar import cli
+    monkeypatch.setattr(cli, "clipboard", lambda: copied)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    with create_pipe_input() as inp, create_app_session(input=inp, output=DummyOutput()):
+        inp.send_text(keys)
+        assert cli.secret_input("Secret: ") == expected
