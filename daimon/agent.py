@@ -53,6 +53,7 @@ class Agent:
         self._reacting: set[asyncio.Task] = set()
         self._reported: set[str] = set()
         self.auto_update = False  # `daimon run` turns it on; updates.auto in config.yaml decides
+        self.paused = False  # set from the web page: routines, wakes and queued tasks wait; chat still works
         self._jobs_queued = False
         self.runner.jobs.on_done = self._jobs_done
 
@@ -202,7 +203,8 @@ class Agent:
     async def _scheduler(self) -> None:
         while True:
             try:
-                self.tick()
+                if not self.paused:
+                    self.tick()
             except Exception as e:  # noqa: BLE001
                 self.surface.event("error", f"scheduler: {e}")
             self._tick.clear()

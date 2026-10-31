@@ -78,8 +78,8 @@ daimon chat
 ```
 
 `daimon chat` runs the agent with you at the terminal; background work (reminders, routines, workers) happens
-while it's open. `daimon run` runs it headless and you reach it through Telegram instead. Only one of them can run
-per home, so while the background service is on, talk to it on Telegram.
+while it's open. `daimon run` runs it headless and you reach it through the [web page](#the-web-page) or Telegram
+instead. Only one of them can run per home, so while the background service is on, talk to it there.
 
 When a tool needs approval you get `[y]es / [n]o / [a]lways / or type a reply`. A typed reply declines the action
 and passes your words back to the agent. With Telegram connected, approvals show up there too as buttons;
@@ -110,7 +110,7 @@ daimon service stop | start
 daimon service uninstall
 ```
 
-`daimon service install` needs Telegram set up, since that's how you reach a headless agent. It also runs the text
+`daimon service install` needs the web page or Telegram, since that's how you reach a headless agent. It also runs the text
 messages service when that add-on is connected. Logs go to `~/.daimon/.cache/daimon.log`.
 
 | | How it starts |
@@ -118,6 +118,50 @@ messages service when that add-on is connected. Logs go to `~/.daimon/.cache/dai
 | Windows | Task Scheduler tasks "Daimon" and "Daimon Messages" at logon, in a hidden window (or the Startup folder if Task Scheduler refuses) |
 | macOS | LaunchAgents `com.daimon.agent` and `com.daimon.messages` in `~/Library/LaunchAgents` |
 | Linux | systemd user units `daimon.service` and `daimon-messages.service`. Run `loginctl enable-linger` to keep them running while you're logged out |
+
+## The web page
+
+The running agent serves a page for chatting with it and watching it work, from any browser, phone or computer.
+Next to the conversation you see what each worker is doing right now (thinking, writing, which tool it's running,
+tokens per second, the end of what it's writing), background jobs and what's coming up. Every reply shows the tool
+calls behind it; tap one for its result. Other views: Activity (every tool call, notice and error as it happens),
+Tasks (go / skip proposals, answer a worker's question, start or cancel tasks), Schedule, Changes (the agent's own
+commits, each with its diff and an Undo), Knowledge and the agent's files. The pills at the top open too: status and
+pause, the main model (pick another from models.yaml), today's spend by model and by worker, everything waiting on
+you, and how the page is reached. Phone and computer get the same features in their own layout; on a phone, add it
+to the home screen.
+
+Approvals show up on the page as cards and are asked on Telegram at the same time; whichever you answer first wins.
+
+A new agent has it on at <http://localhost:8770>, this computer only. `daimon config web` changes where it's
+reachable and who gets in, and shows a link that signs a browser in. Two settings in config.yaml's `web:` section:
+
+| `listen` | Reachable from |
+|---|---|
+| `localhost` | this computer only (default), and anything you run here that forwards to it: Caddy, nginx, Cloudflare Tunnel |
+| `tailscale` | your tailnet: it listens on this computer's Tailscale address |
+| `all` | every network this computer is on: your home Wi-Fi, a VPN |
+| an IP address | just that address of this computer |
+
+| `auth` | Who gets in |
+|---|---|
+| `token` | each browser signs in once with `WEB_TOKEN` from the secrets file (made for you on first start). The default, except on Tailscale |
+| `tailscale` | only devices logged in to your own Tailscale account, checked with `tailscale whois`. No password |
+| `none` | anyone who reaches it. Only with `listen: localhost`, or with `allow_open: true` when something in front of it already checks |
+| `package.module:Class` | your own check, a subclass of `daimon.web.access.Auth` |
+
+```yaml
+web:
+  enabled: true
+  listen: tailscale     # or localhost, all, 192.168.1.20
+  port: 8770
+  auth: tailscale       # or token, none
+  behind_proxy: false   # true behind a reverse proxy, so it sees https and the real addresses
+```
+
+Behind a reverse proxy or tunnel, keep `listen: localhost` with `auth: token` (or your proxy's own login and
+`auth: none`), and set `behind_proxy: true`. Anything that changes something needs a header only the page itself
+sends, so another site can't act through your signed-in browser.
 
 ## What it sees each turn: CONTEXT.md
 
@@ -324,6 +368,8 @@ daimon/inbox.py      inbox drop folder
 daimon/thread.py     main conversation + compaction
 daimon/gateway.py    channel contract, approvals across channels, `daimon run` log
 daimon/telegram.py   Telegram channel (Bot API long polling, inline-button approvals)
+daimon/web/          the web page: channel.py (live updates), server.py (routes), access.py (where it listens,
+                     who gets in), data.py (what the page reads), static/ (the page itself, no build step)
 daimon/projects.py   projects: workspace, session, handoff notes and log across tasks
 daimon/harness/      external agents: driver interface + registry, sessions, tools, consent, limits, workspaces
 daimon/templates/    starter files for a new home

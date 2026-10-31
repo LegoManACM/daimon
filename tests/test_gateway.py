@@ -211,12 +211,14 @@ def test_send_retries_rate_limits():
 def test_configured_channels(home, monkeypatch):  # noqa: F811
     monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    assert configured(home) == []
+    assert [c.name for c in configured(home)] == ["web"]  # a new home has the web page, on this computer only
     monkeypatch.setenv("TELEGRAM_TOKEN", "123:abc")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001")
-    [tg] = configured(home)
+    tg, web = configured(home)
     assert tg.chat_id == -1001 and tg.events == {"notify", "error"}
-    home.write("config.yaml", home.read("config.yaml").replace("  telegram:\n", "  telegram:\n    enabled: false\n"))
+    assert web.name == "web" and web.listen == "localhost" and web.port == 8770
+    home.write("config.yaml", home.read("config.yaml").replace("  telegram:\n", "  telegram:\n    enabled: false\n")
+               .replace("web:\n  enabled: true", "web:\n  enabled: false"))
     assert configured(home) == []
     asyncio.run(tg.close())
 

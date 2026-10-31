@@ -16,6 +16,8 @@ class Thread:
         self.log = folder / "messages.jsonl"
         self.summary_file = folder / "summary.md"
         self.messages: list[dict[str, Any]] = []
+        # Told about every change, for live views (the web page): ("append", index, message) or ("reset",).
+        self.listeners: list[Callable[..., None]] = []
         if self.log.exists():
             for line in self.log.read_text(encoding="utf-8").splitlines():
                 if line.strip():
@@ -29,6 +31,14 @@ class Thread:
         self.messages.append(message)
         with self.log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        self._tell("append", len(self.messages) - 1, message)
+
+    def _tell(self, *change: Any) -> None:
+        for listen in self.listeners:
+            try:
+                listen(*change)
+            except Exception:  # noqa: BLE001 - a broken view must never break the conversation
+                pass
 
     def repair(self) -> None:
         """If a turn was interrupted between a tool call and its result, close the gap so providers accept the
@@ -66,6 +76,7 @@ class Thread:
             "".join(json.dumps(m, ensure_ascii=False) + "\n" for m in old), encoding="utf-8")
         self.summary_file.write_text(await summarize(self.summary, old), encoding="utf-8")
         self._rewrite()
+        self._tell("reset")
         return True
 
     def clear(self) -> None:
@@ -74,3 +85,4 @@ class Thread:
             archive.mkdir(exist_ok=True)
             self.log.replace(archive / f"{time.strftime('%Y%m%d-%H%M%S')}-cleared.jsonl")
         self.messages = []
+        self._tell("reset")

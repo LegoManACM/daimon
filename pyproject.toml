@@ -12,6 +12,8 @@ dependencies = [
     "claude-agent-sdk>=0.2",  # the built-in claude-code harness
     "questionary>=2.0",       # daimon setup
     "rich>=13",
+    "starlette>=0.40",        # the web page (also what the mcp package serves with)
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]

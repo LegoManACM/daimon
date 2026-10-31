@@ -79,6 +79,8 @@ class Gateway:
         """Connect every channel. One that fails is dropped; returns what went wrong for each."""
         self.agent, failed = agent, []
         for c in list(self.channels):
+            if attach := getattr(c, "attach", None):  # channels that show more than the conversation (the web page)
+                attach(agent)
             try:
                 await c.connect(lambda msg, c=c: self.handle(msg, c))
             except Exception as e:  # noqa: BLE001
@@ -167,7 +169,8 @@ class Log:
 
 
 def configured(home) -> list[Channel]:
-    """The channels set up in config.yaml under `channels:`. Telegram is on once TELEGRAM_TOKEN is set."""
+    """The channels set up in config.yaml: Telegram (`channels:`, on once TELEGRAM_TOKEN is set) and the web page
+    (`web:`, on with enabled: true)."""
     cfg = home.config().get("channels") or {}
     out: list[Channel] = []
     tg = expand_secrets({"token": "${TELEGRAM_TOKEN}", "chat_id": "${TELEGRAM_CHAT_ID}", **(cfg.get("telegram") or {})})
@@ -175,4 +178,7 @@ def configured(home) -> list[Channel]:
         from .telegram import TelegramChannel
         chat = str(tg.get("chat_id") or "").strip()
         out.append(TelegramChannel(tg["token"], int(chat) if chat.lstrip("-").isdigit() else None, tg.get("events")))
+    from .web.channel import from_config
+    if web := from_config(home):
+        out.append(web)
     return out

@@ -89,12 +89,12 @@ def cmd_service(args: argparse.Namespace) -> None:
     home = open_home(args)
     if args.action == "install":
         if not configured(home):
-            sys.exit(f"Running in the background needs a channel to reach you on: put TELEGRAM_TOKEN=... in "
-                     f"{home.secrets_file} (or run `daimon config telegram`) first.")
+            sys.exit(f"Running in the background needs a way to reach you: the web page (`daimon config web`) or "
+                     f"Telegram (TELEGRAM_TOKEN=... in {home.secrets_file}, or `daimon config telegram`).")
         messages = args.messages if args.messages is not None else "messages" in home.mcp().get("mcpServers", {})
         lines = service.install(home, messages=messages, start_now=args.start)
-        lines.append("While it runs, `daimon chat` can't open this agent: talk to it on Telegram, or "
-                     "`daimon service stop` first.")
+        lines.append("While it runs, `daimon chat` can't open this agent: talk to it on the web page or Telegram, "
+                     "or `daimon service stop` first.")
     else:
         lines = getattr(service, args.action)(home)
     print("\n".join(lines) or "Nothing installed. `daimon service install` sets it up.")
@@ -177,8 +177,9 @@ async def run(home: Home) -> None:
     lock = hold_lock(home)
     channels = configured(home)
     if not channels:
-        sys.exit(f"No channel to reach you on, so approvals would have nowhere to go. Put TELEGRAM_TOKEN=... (from "
-                 f"@BotFather) in {home.secrets_file} and run `daimon run` again.")
+        sys.exit(f"No channel to reach you on, so approvals would have nowhere to go. Turn on the web page "
+                 f"(`daimon config web`) or Telegram (TELEGRAM_TOKEN=... from @BotFather in {home.secrets_file}), "
+                 f"then run `daimon run` again.")
     agent, gateway = await start(home, [Log(), *channels])
     agent.auto_update = True  # headless only: an update restarts the agent, which would end a `daimon chat`
     try:
@@ -262,12 +263,12 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
     p_config = sub.add_parser("config", help="change one part of the setup (no part: pick from a menu)")
-    p_config.add_argument("section", nargs="?", choices=["model", "key", "knowledge", "telegram", "claude", "addons",
-                                                         "background", "updates", "show"])
+    p_config.add_argument("section", nargs="?", choices=["model", "key", "knowledge", "telegram", "web", "claude",
+                                                         "addons", "background", "updates", "show"])
     p_init = sub.add_parser("init", help="create the agent's home folder")
     p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")
     sub.add_parser("chat", help="run the agent and chat with it (plus any channels, like Telegram)")
-    sub.add_parser("run", help="run the agent headless; you reach it through its channels (Telegram)")
+    sub.add_parser("run", help="run the agent headless; you reach it through its channels (web page, Telegram)")
     p_ask = sub.add_parser("ask", help="send one message and print the reply (no background work)")
     p_ask.add_argument("message")
     p_inbox = sub.add_parser("inbox", help="add an item to the agent's inbox")

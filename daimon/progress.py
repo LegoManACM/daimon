@@ -7,7 +7,8 @@ The runner streams each model call and feeds a Meter, which turns chunks into a 
            | thinking (reasoning) | writing | calling (writing tool calls)
            | tool (running one) | done | idle (the turn or task is over)
   model, started, first_token (time.monotonic()), tokens (estimated while streaming, exact when done),
-  tps (output tokens per second since the first one), tail (the end of what it's writing), tool, usd
+  tps (output tokens per second since the first one), tail (the end of what it's writing), text (the answer so far,
+  without reasoning: the web page streams it), tool, usd
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from typing import Any, Callable
 WHO: contextvars.ContextVar[str] = contextvars.ContextVar("who", default="main")
 
 TAIL = 160
+TEXT = 40_000  # how much of an answer in progress the state carries
 
 
 def reporter(surface: Any) -> Callable[[str, dict], None] | None:
@@ -30,7 +32,7 @@ class Meter:
     def __init__(self, report: Callable[[str, dict], None], who: str, model: str):
         self.report, self.who = report, who
         self.state: dict[str, Any] = {"phase": "waiting", "model": model, "started": time.monotonic(),
-                                      "first_token": None, "tokens": 0, "tps": 0.0, "tail": ""}
+                                      "first_token": None, "tokens": 0, "tps": 0.0, "tail": "", "text": ""}
         self.chars = 0
         self.send()
 
@@ -46,7 +48,7 @@ class Meter:
         self.send()
 
     def retrying(self, attempt: int) -> None:
-        self.state.update(phase="retrying", attempt=attempt, first_token=None, tokens=0, tail="")
+        self.state.update(phase="retrying", attempt=attempt, first_token=None, tokens=0, tail="", text="")
         self.chars = 0
         self.send()
 
@@ -61,6 +63,8 @@ class Meter:
         if text:
             s["phase"] = "writing"
             s["tail"] = (s["tail"] + text)[-TAIL:]
+            if len(s["text"]) < TEXT:
+                s["text"] += text
         elif reasoning:
             s["phase"] = "thinking"
             s["tail"] = (s["tail"] + reasoning)[-TAIL:]

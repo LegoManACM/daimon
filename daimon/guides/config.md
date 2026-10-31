@@ -35,8 +35,9 @@ Most keys take effect on your next step; channels and harness drivers on restart
 | `knowledge.retrieval_max_chars` | 6000 | how much retrieved knowledge goes in a prompt |
 | `knowledge.curator` | `curator` | the worker that files inbox items into knowledge |
 | `channels` | | guide `connections` |
+| `web` | on, localhost | the web page: `listen`, `port`, `auth` (guide `connections`) |
 
-The user can change any part of their setup themselves with `daimon config <part>` (model, key, knowledge, telegram, claude, addons, background, updates, show), and update with `daimon update`. Point them there for what you can't do: API keys, sign-ins, start at login.
+The user can change any part of their setup themselves with `daimon config <part>` (model, key, knowledge, telegram, web, claude, addons, background, updates, show), and update with `daimon update`. Point them there for what you can't do: API keys, sign-ins, start at login.
 
 Example: the user says "the local model keeps timing out" (on a slow computer it can take minutes to load):
 ```yaml

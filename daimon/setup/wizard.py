@@ -82,6 +82,14 @@ def wait_for_chat(token: str, seconds: float = TELEGRAM_WAIT_S, api=telegram) ->
     return found
 
 
+def web_line(home: Home) -> str:
+    cfg = home.config().get("web") or {}
+    if not cfg.get("enabled"):
+        return "off (`daimon config web`)"
+    from ..web.channel import DEFAULT_PORT
+    return f"{cfg.get('listen', 'localhost')}, port {cfg.get('port', DEFAULT_PORT)}, "            f"{cfg.get('auth') or ('tailscale' if cfg.get('listen') == 'tailscale' else 'token')}"
+
+
 def claude_path() -> str | None:
     return shutil.which("claude")
 
@@ -151,7 +159,7 @@ class Done:
 class Wizard:
     STEPS = 8
     SECTIONS = {"model": "Provider and main model", "key": "An API key", "knowledge": "Where knowledge lives",
-                "telegram": "Telegram",
+                "telegram": "Telegram", "web": "Web page (chat and watch it work in a browser)",
                 "claude": "Claude Code", "addons": "Add-ons (Canvas, text messages)",
                 "background": "Running in the background", "updates": "Updates",
                 "show": "Show the current settings"}
@@ -618,6 +626,67 @@ class Wizard:
             self.say(f"[dim]The messaging service keeps running for now (pid {self.messages_proc.pid}). After a "
                      "restart, start it with `daimon-messages run`.[/]")
 
+    def web(self) -> None:
+        """The web page: where it listens and who gets in (daimon/web/access.py)."""
+        from ..web import access
+        from ..web.channel import DEFAULT_PORT
+        home = self.home
+        self.step(0, "Web page")
+        self.say("A page for chatting with the agent and watching it work: what each worker is doing right now, "
+                 "tool calls, tasks, spend and its change history. The running agent serves it (`daimon run` or "
+                 "`daimon chat`).")
+        cfg = home.config().get("web") or {}
+        has_ts = bool(access.tailscale_cli())
+        choices = [("Only on this computer (also for a reverse proxy or tunnel you run here)", "localhost"),
+                   ("My devices on Tailscale" + ("" if has_ts else " (Tailscale isn't installed here)"), "tailscale"),
+                   ("Anything on my network (home Wi-Fi, a VPN); browsers sign in with a token", "all"),
+                   ("A specific address of this computer...", "address"), ("Off", "off")]
+        current = cfg.get("listen", "localhost") if cfg.get("enabled") else "off"
+        pick = self.ask.select("Where should the page be reachable?", choices,
+                               default=current if current in ("localhost", "tailscale", "all", "off") else "address")
+        if pick == "off":
+            home.set_option("web", "enabled", False)
+            home.commit("setup: web page off", ["config.yaml"])
+            self.ok("Web page: off")
+            return
+        listen = pick
+        if pick == "address":
+            listen = self.ask.text("Address (an IP of this computer):", cfg.get("listen", ""))
+        try:
+            bound = access.resolve_listen(listen)
+        except access.AccessError as e:
+            self.warn(f"{e}. Nothing changed.")
+            return
+        auth = "token"
+        if listen == "tailscale":
+            auth = self.ask.select("Who gets in?", [
+                ("Devices logged in to my Tailscale account (no password)", "tailscale"),
+                ("Anyone on the tailnet with the sign-in token", "token")], default=cfg.get("auth", "tailscale"))
+        elif listen == "localhost":
+            auth = self.ask.select("Ask for a sign-in token?", [
+                ("Yes, a token, once per browser (recommended, and needed behind a tunnel or proxy)", "token"),
+                ("No: anyone who can open it on this computer gets in", "none")], default=cfg.get("auth", "token"))
+        port = self.ask.text("Port:", str(cfg.get("port", DEFAULT_PORT)))
+        if not port.isdigit():
+            self.warn("That isn't a port number. Nothing changed.")
+            return
+        for key, value in (("enabled", True), ("listen", listen), ("port", int(port)), ("auth", auth)):
+            home.set_option("web", key, value)
+        home.commit(f"setup: web page on {listen}, {auth}", ["config.yaml"])
+        if auth == "token" and not os.environ.get("WEB_TOKEN"):
+            home.set_secret("WEB_TOKEN", access.new_token())
+        url = access.page_urls(listen, bound, int(port))[0]
+        who = {"token": "sign-in token", "tailscale": "your Tailscale devices", "none": "no sign-in"}[auth]
+        self.ok(f"Web page: {url} ({who})")
+        lines = [f"[bold]{esc(url)}[/]"]
+        if auth == "token":
+            lines.append(f"\nSign-in link for each browser (keep it private):\n{esc(url)}/?token={esc(os.environ['WEB_TOKEN'])}")
+        if listen == "localhost":
+            lines.append("\nTo reach it from elsewhere, point a reverse proxy or tunnel (Caddy, nginx, Cloudflare Tunnel) "
+                         "at it, or pick Tailscale or your network here.")
+        lines.append("\nIt starts with the agent: restart it if it's running (`daimon service stop`, then `start`).")
+        self.panel("\n".join(lines), "Web page")
+
     def updates(self) -> None:
         self.step(0, "Updates")
         check, auto = update.settings(self.home)
@@ -646,6 +715,7 @@ class Wizard:
                                        if p.env and os.environ.get(p.env)) or "none"),
                 ("Telegram", ("set up" + (f", chat {chat}" if chat else ", no chat id yet"))
                  if os.environ.get("TELEGRAM_TOKEN") else "not set up"),
+                ("Web page", web_line(home)),
                 ("Claude Code", "ready" if claude_path() else "not installed (optional)"),
                 ("Add-ons", ", ".join(a.title for a in addons.ADDONS.values()
                                       if a.key in home.mcp().get("mcpServers", {})) or "none"),

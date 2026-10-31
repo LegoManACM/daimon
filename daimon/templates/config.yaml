@@ -89,3 +89,17 @@ channels:
     token: ${TELEGRAM_TOKEN}
     chat_id: ${TELEGRAM_CHAT_ID}
     events: [notify, error]  # background notices sent there, besides messages and approvals
+
+# The web page: chat with the agent and watch it work (what each worker is doing, tool calls, tasks, spend,
+# its change history). Served by the running agent. `daimon config web` sets it up step by step.
+web:
+  enabled: true
+  listen: localhost         # localhost: this computer only (and a reverse proxy or tunnel you run here)
+                            # tailscale: this computer's Tailscale address    all: every network it's on
+                            # or an IP address of this computer
+  port: 8770
+  auth: token               # token: each browser signs in once with WEB_TOKEN from the secrets file (made for
+                            #   you on first start)   tailscale: only devices on your own Tailscale account
+                            # none: no sign-in (localhost only, unless allow_open: true because something in
+                            #   front of it checks)   package.module:Class: your own (see daimon/web/access.py)
+  behind_proxy: false       # true when a reverse proxy forwards to it, so it sees the real https and addresses
