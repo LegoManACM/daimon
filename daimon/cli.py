@@ -103,6 +103,9 @@ def cmd_service(args: argparse.Namespace) -> None:
     print("\n".join(lines) or "Nothing installed. `daimon service install` sets it up.")
 
 
+WEB_START_WAIT_S = 30  # how long `daimon web` waits for a starting agent to serve the page
+
+
 def web_page(home: Home) -> tuple[str, str, tuple[str, int]]:
     """The page's address, a link that also signs a browser in, and where to check that it's up."""
     from .web import access
@@ -127,14 +130,41 @@ def cmd_web(args: argparse.Namespace) -> None:
         url, link, probe = web_page(home)
     except AccessError as e:
         sys.exit(f"{e}.")
-    try:
-        socket.create_connection(probe, timeout=2).close()
-    except OSError:
-        if agent_running(home):
-            sys.exit(f"The agent is running but isn't serving {url}: it started before the page was turned on. "
-                     f"Restart it (`daimon service restart`).")
-        sys.exit(f"Nothing is serving {url}: the agent isn't running. `daimon service start` starts it in the "
-                 f"background, or `daimon run` here.")
+
+    def serving() -> bool:
+        try:
+            socket.create_connection(probe, timeout=2).close()
+            return True
+        except OSError:
+            return False
+
+    def wait() -> bool:
+        deadline = time.monotonic() + WEB_START_WAIT_S
+        while not serving():
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(1)
+        return True
+
+    if not serving():
+        if not agent_running(home):
+            sys.exit(f"Nothing is serving {url}: the agent isn't running. `daimon service start` starts it in the "
+                     f"background, or `daimon run` here.")
+        # It takes its lock first and serves the page some seconds later, e.g. right after `daimon service restart`.
+        print("The agent is starting; waiting for the page...", flush=True)
+        if not wait():
+            # Running without it: the page was turned on after it started, or it couldn't listen then (Tailscale
+            # not up yet at login). A restart serves it, if it's the background service.
+            from .setup import service
+            log = home.cache / "daimon.log"
+            if not service.running(home):
+                sys.exit(f"The agent is running but isn't serving {url}. It's open in `daimon chat` or a terminal's "
+                         f"`daimon run`: start that again to serve the page.")
+            print("It's running without the page; restarting it...", flush=True)
+            for line in service.restart(home):
+                print(f"  {line}")
+            if not wait():
+                sys.exit(f"Still not serving {url} after a restart. Its log says why: {log}")
     if args.link:
         print(link if link == url else f"Sign-in link for another browser or your phone (keep it private):\n{link}")
     elif webbrowser.open(link):

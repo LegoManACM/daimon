@@ -596,3 +596,42 @@ def test_daimon_web_opens_signed_in_or_prints_the_link(home, monkeypatch, capsys
     assert opened == [f"{url}/?token=tok"]
     out = capsys.readouterr().out
     assert f"Opened {url}\n" in out and f"{url}/?token=tok" in out.split("Opened")[1]
+
+
+def test_daimon_web_waits_for_a_starting_agent(home, monkeypatch, capsys):
+    import socket
+    import webbrowser
+    tries = []
+
+    class Conn:
+        def close(self):
+            pass
+
+    def connect(probe, timeout):
+        tries.append(probe)
+        if len(tries) < 3:  # the agent holds its lock but isn't serving yet
+            raise OSError("refused")
+        return Conn()
+    monkeypatch.setattr(cli, "web_page", lambda h: ("http://localhost:8770", "http://localhost:8770", ("127.0.0.1", 8770)))
+    monkeypatch.setattr(cli, "agent_running", lambda h: True)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(webbrowser, "open", lambda u: True)
+    cli.cmd_web(web_args(home))
+    assert len(tries) == 3 and "waiting for the page" in capsys.readouterr().out
+
+    # running without the page: in `daimon chat` it says so, as the background service it restarts and serves
+    up = []
+    monkeypatch.setattr(socket, "create_connection", lambda probe, timeout: Conn() if up else (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(cli, "WEB_START_WAIT_S", -1)
+    monkeypatch.setattr(service, "running", lambda h: False)
+    with pytest.raises(SystemExit, match="daimon chat"):
+        cli.cmd_web(web_args(home))
+    monkeypatch.setattr(service, "running", lambda h: True)
+    monkeypatch.setattr(service, "restart", lambda h: up.append(1) or ["daimon: restarted"])
+    cli.cmd_web(web_args(home))
+    assert up == [1] and "restarting it" in capsys.readouterr().out
+    up.clear()
+    monkeypatch.setattr(service, "restart", lambda h: ["daimon: restarted"])
+    with pytest.raises(SystemExit, match="after a restart"):
+        cli.cmd_web(web_args(home))
