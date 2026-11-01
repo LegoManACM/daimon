@@ -1,6 +1,6 @@
 [project]
 name = "daimon-calendar"
-version = "0.2.1"
+version = "0.2.2"
 description = "Calendars for Daimon: Google, Outlook, iCloud and other CalDAV, and .ics feeds as one MCP server"
 requires-python = ">=3.11"
 dependencies = [
