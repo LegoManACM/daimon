@@ -1,4 +1,4 @@
-"""`daimon` command line: setup, config, init, chat, run, ask, inbox, service, update, uninstall."""
+"""`daimon` command line: setup, config, init, chat, run, web, ask, inbox, service, update, uninstall."""
 from __future__ import annotations
 
 import argparse
@@ -101,6 +101,46 @@ def cmd_service(args: argparse.Namespace) -> None:
     else:
         lines = getattr(service, args.action)(home)
     print("\n".join(lines) or "Nothing installed. `daimon service install` sets it up.")
+
+
+def web_page(home: Home) -> tuple[str, str, tuple[str, int]]:
+    """The page's address, a link that also signs a browser in, and where to check that it's up."""
+    from .web import access
+    from .web.channel import DEFAULT_PORT
+    cfg = home.config().get("web") or {}
+    if not cfg.get("enabled"):
+        raise access.AccessError("The web page is off. `daimon config web` turns it on")
+    listen, port = str(cfg.get("listen") or "localhost"), int(cfg.get("port", DEFAULT_PORT))
+    bound = access.resolve_listen(listen)
+    url = access.page_urls(listen, bound, port)[0]
+    auth = access.make_auth(cfg, home)
+    link = f"{url}/?token={auth.token()}" if isinstance(auth, access.TokenAuth) else url
+    return url, link, ("127.0.0.1" if bound == "0.0.0.0" else bound, port)
+
+
+def cmd_web(args: argparse.Namespace) -> None:
+    import socket
+    import webbrowser
+    from .web.access import AccessError
+    home = open_home(args)
+    try:
+        url, link, probe = web_page(home)
+    except AccessError as e:
+        sys.exit(f"{e}.")
+    try:
+        socket.create_connection(probe, timeout=2).close()
+    except OSError:
+        if agent_running(home):
+            sys.exit(f"The agent is running but isn't serving {url}: it started before the page was turned on. "
+                     f"Restart it (`daimon service stop`, then `daimon service start`).")
+        sys.exit(f"Nothing is serving {url}: the agent isn't running. `daimon service start` starts it in the "
+                 f"background, or `daimon run` here.")
+    if args.link:
+        print(link if link == url else f"Sign-in link for another browser or your phone (keep it private):\n{link}")
+    elif webbrowser.open(link):
+        print(f"Opened {url}")
+    else:
+        print(f"Couldn't open a browser here. The page is at {url}; `daimon web --link` prints a link that signs in.")
 
 
 def hold_lock(home: Home):
@@ -274,6 +314,8 @@ def main() -> None:
     p_init.add_argument("--model", help="LiteLLM model id for the main agent (added to models.yaml)")
     sub.add_parser("chat", help="run the agent and chat with it (plus any channels, like Telegram)")
     sub.add_parser("run", help="run the agent headless; you reach it through its channels (web page, Telegram)")
+    p_web = sub.add_parser("web", help="open the web page in your browser, signed in")
+    p_web.add_argument("--link", action="store_true", help="print a sign-in link for another device instead")
     p_ask = sub.add_parser("ask", help="send one message and print the reply (no background work)")
     p_ask.add_argument("message")
     p_inbox = sub.add_parser("inbox", help="add an item to the agent's inbox")
@@ -326,6 +368,8 @@ def main() -> None:
             asyncio.run(run(open_home(args)))
         except KeyboardInterrupt:
             print("Stopped.")
+    elif args.cmd == "web":
+        cmd_web(args)
     elif args.cmd == "ask":
         asyncio.run(ask(open_home(args), args.message))
     elif args.cmd == "inbox":

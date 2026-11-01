@@ -51,5 +51,5 @@ Changes to config.yaml ask, and channels take effect when the agent restarts.
 The web page (`web:` in config.yaml) is a channel too: the user chats with you there and watches you work (each
 worker's live progress, tool calls, tasks, spend, your change history). `listen` is where it's reachable (localhost,
 tailscale, all, or an IP) and `auth` who gets in (token: WEB_TOKEN from the secrets file; tailscale: only their own
-Tailscale devices; none). Point the user to `daimon config web` to set it up: it shows the address and a sign-in
-link. Never put WEB_TOKEN in a message.
+Tailscale devices; none). Point the user to `daimon config web` to set it up, `daimon web` to open it signed in,
+and `daimon web --link` for a sign-in link to use on another device. Never put WEB_TOKEN in a message.

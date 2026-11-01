@@ -79,7 +79,8 @@ daimon chat
 
 `daimon chat` runs the agent with you at the terminal; background work (reminders, routines, workers) happens
 while it's open. `daimon run` runs it headless and you reach it through the [web page](#the-web-page) or Telegram
-instead. Only one of them can run per home, so while the background service is on, talk to it there.
+instead. Only one of them can run per home, so while the background service is on, talk to it there:
+`daimon web` opens the page.
 
 When a tool needs approval you get `[y]es / [n]o / [a]lways / or type a reply`. A typed reply declines the action
 and passes your words back to the agent. With Telegram connected, approvals show up there too as buttons;
@@ -133,8 +134,9 @@ to the home screen.
 
 Approvals show up on the page as cards and are asked on Telegram at the same time; whichever you answer first wins.
 
-A new agent has it on at <http://localhost:8770>, this computer only. `daimon config web` changes where it's
-reachable and who gets in, and shows a link that signs a browser in. Two settings in config.yaml's `web:` section:
+A new agent has it on at <http://localhost:8770>, this computer only, served while the agent runs. `daimon web`
+opens it in your browser, already signed in; `daimon web --link` prints a link that signs in another device, like
+your phone. `daimon config web` changes where it's reachable and who gets in. Two settings in config.yaml's `web:` section:
 
 | `listen` | Reachable from |
 |---|---|

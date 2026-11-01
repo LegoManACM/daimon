@@ -696,7 +696,8 @@ class Wizard:
         if listen == "localhost":
             lines.append("\nTo reach it from elsewhere, point a reverse proxy or tunnel (Caddy, nginx, Cloudflare Tunnel) "
                          "at it, or pick Tailscale or your network here.")
-        lines.append("\nIt starts with the agent: restart it if it's running (`daimon service stop`, then `start`).")
+        lines.append("\nIt starts with the agent: restart it if it's running (`daimon service stop`, then `start`). "
+                     "After that, `daimon web` opens it.")
         self.panel("\n".join(lines), "Web page")
 
     def updates(self) -> None:

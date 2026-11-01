@@ -15,6 +15,7 @@ from daimon import cli
 from daimon.home import Home
 from daimon.setup import addons, providers, service, wizard
 from daimon.setup.providers import KeyProblem, Model
+from daimon.web.access import AccessError
 
 
 @pytest.fixture
@@ -526,3 +527,47 @@ def test_config_updates(home, monkeypatch, clean_env):
     assert wizard.update.settings(home) == (True, True)
     make_wizard(Scripted("off")).configure(home, "updates")
     assert wizard.update.settings(home) == (False, False)
+
+
+# ---- daimon web --------------------------------------------------------------------------------------------
+def web_args(home, link=False):
+    import argparse
+    return argparse.Namespace(home=str(home.root), link=link)
+
+
+def test_web_page_address_and_sign_in_link(home, monkeypatch):
+    monkeypatch.setenv("WEB_TOKEN", "tok")
+    assert cli.web_page(home) == ("http://localhost:8770", "http://localhost:8770/?token=tok", ("127.0.0.1", 8770))
+    home.set_option("web", "auth", "none")
+    assert cli.web_page(home)[1] == "http://localhost:8770"
+    home.set_option("web", "enabled", False)
+    with pytest.raises(AccessError, match="off"):
+        cli.web_page(home)
+
+
+def test_daimon_web_says_when_nothing_serves_it(home, monkeypatch):
+    monkeypatch.setenv("WEB_TOKEN", "tok")
+    monkeypatch.setattr(cli, "web_page", lambda h: ("http://localhost:1", "http://localhost:1/?token=tok", ("127.0.0.1", 1)))
+    with pytest.raises(SystemExit, match="isn't running"):
+        cli.cmd_web(web_args(home))
+
+
+def test_daimon_web_opens_signed_in_or_prints_the_link(home, monkeypatch, capsys):
+    import socket
+    import webbrowser
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    port = server.getsockname()[1]
+    url = f"http://localhost:{port}"
+    monkeypatch.setattr(cli, "web_page", lambda h: (url, f"{url}/?token=tok", ("127.0.0.1", port)))
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda u: opened.append(u) or True)
+    try:
+        cli.cmd_web(web_args(home))
+        cli.cmd_web(web_args(home, link=True))
+    finally:
+        server.close()
+    assert opened == [f"{url}/?token=tok"]
+    out = capsys.readouterr().out
+    assert f"Opened {url}\n" in out and f"{url}/?token=tok" in out.split("Opened")[1]
