@@ -15,7 +15,6 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from .gate import Decision, Tool
 from .home import expand_secrets
-from .runner import ModelError, provider_hint
 
 
 @dataclass
@@ -96,6 +95,7 @@ class Gateway:
 
     async def handle(self, msg: Message, channel: Channel) -> None:
         """A message from the user on `channel`; the reply goes back there."""
+        from .runner import ModelError, provider_hint  # loaded by the agent by now; at the top it'd slow every `daimon` command
         try:
             reply = await self.agent.send(msg.text)
         except ModelError as e:

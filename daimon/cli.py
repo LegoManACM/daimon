@@ -7,13 +7,16 @@ import importlib.metadata
 import os
 import sys
 import time
+from typing import TYPE_CHECKING
 
 from . import inbox
-from .agent import Agent
 from .gateway import Gateway, Log, Message, configured
 from .home import Home, resolve_home
 from .tasks import OPEN, summary
 from .terminal import Terminal, console, read_lines, status_table
+
+if TYPE_CHECKING:
+    from .agent import Agent  # imported where it's built: it pulls in litellm and mcp, ~10s before `daimon -h` answers
 
 
 def version() -> str:
@@ -118,6 +121,7 @@ def hold_lock(home: Home):
 
 
 async def start(home: Home, channels: list) -> tuple[Agent, Gateway]:
+    from .agent import Agent
     gateway = Gateway(channels)
     agent = Agent(home, gateway)
     await agent.start()
@@ -195,6 +199,7 @@ async def run(home: Home) -> None:
 
 async def ask(home: Home, message: str) -> None:
     terminal = Terminal(interactive=False)
+    from .agent import Agent
     gateway = Gateway([terminal])
     agent = Agent(home, gateway)
     await agent.start(scheduler=False)
