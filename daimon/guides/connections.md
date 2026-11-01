@@ -46,7 +46,7 @@ the chat.
 
 Where the user reaches you besides the terminal: `channels:` in config.yaml. Telegram needs TELEGRAM_TOKEN and
 TELEGRAM_CHAT_ID in the secrets file; `events: [notify, error]` sets which background notices are sent there.
-Changes to config.yaml ask, and channels take effect when the agent restarts.
+Changes to config.yaml ask, and channels take effect when the agent restarts (`restart_agent`).
 
 The web page (`web:` in config.yaml) is a channel too: the user chats with you there and watches you work (each
 worker's live progress, tool calls, tasks, spend, your change history). `listen` is where it's reachable (localhost,

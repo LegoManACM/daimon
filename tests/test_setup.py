@@ -181,6 +181,31 @@ def test_windows_stop_kills_the_launcher_tree(home, monkeypatch, sh):
     assert ["taskkill", "/PID", "123", "/T", "/F"] in sh.calls
 
 
+def test_restart_restarts_installed_jobs(home, tmp_path, monkeypatch, sh):
+    monkeypatch.setattr(service, "platform", lambda: "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    service.install(home, messages=False)
+    assert service.restart(home) == ["daimon: restarted"]
+    assert ["systemctl", "--user", "restart", "daimon.service"] in sh.calls
+    monkeypatch.setattr(service, "platform", lambda: "macos")
+    monkeypatch.setattr(service.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(service.os, "getuid", lambda: 501, raising=False)
+    service.install(home, messages=False)
+    sh.results["launchctl kickstart"] = (1, "", "Operation not permitted")
+    assert service.restart(home) == ["daimon: couldn't restart: Operation not permitted"]
+    assert ["launchctl", "kickstart", "-k", "gui/501/com.daimon.agent"] in sh.calls
+
+
+def test_restart_later_runs_service_restart_outside(home, monkeypatch):
+    detached = []
+    monkeypatch.setattr(service, "detach", lambda where, name, text: detached.append((where, name, text)))
+    log = service.restart_later(home, after_s=5)
+    where, name, text = detached[0]
+    assert (where, name, log) == (home.cache, "restart", home.cache / "restart.log")
+    assert f'"--home" "{home.root}" "service" "restart" >> "{log}"' in text
+    assert ("ping -n 6" if sys.platform == "win32" else "sleep 5") in text
+
+
 def test_plist(home, monkeypatch):
     monkeypatch.setenv("DAIMON_SECRETS", "/s.env")
     job = service.jobs(home, python="/venv/bin/python")[0]

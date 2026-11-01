@@ -132,7 +132,7 @@ def cmd_web(args: argparse.Namespace) -> None:
     except OSError:
         if agent_running(home):
             sys.exit(f"The agent is running but isn't serving {url}: it started before the page was turned on. "
-                     f"Restart it (`daimon service stop`, then `daimon service start`).")
+                     f"Restart it (`daimon service restart`).")
         sys.exit(f"Nothing is serving {url}: the agent isn't running. `daimon service start` starts it in the "
                  f"background, or `daimon run` here.")
     if args.link:
@@ -332,7 +332,7 @@ def main() -> None:
     p_uninstall = sub.add_parser("uninstall", help="remove Daimon: start at login, its folders, keys and the program")
     p_uninstall.add_argument("--yes", action="store_true", help="don't ask first")
     p_service = sub.add_parser("service", help="run the agent in the background, started at login")
-    p_service.add_argument("action", choices=["install", "uninstall", "status", "start", "stop"])
+    p_service.add_argument("action", choices=["install", "uninstall", "status", "start", "stop", "restart"])
     p_service.add_argument("--messages", action=argparse.BooleanOptionalAction, default=None,
                            help="also run `daimon-messages run` (install only; default: if mcp.json has it)")
     p_service.add_argument("--start", action="store_true", help="start it now too (install only)")

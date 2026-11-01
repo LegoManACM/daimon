@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -176,6 +177,10 @@ def _win_stop(home: Home, job: Job) -> str:
     return ""
 
 
+def _win_restart(home: Home, job: Job) -> str:
+    return _win_stop(home, job) or _win_start(home, job)
+
+
 def _win_uninstall(home: Home, job: Job) -> None:
     _win_stop(home, job)
     if _win_task(job):
@@ -236,6 +241,13 @@ def _mac_stop(home: Home, job: Job) -> str:
     return "" if r.returncode == 0 or "No such process" in (r.stderr or "") else err(r)
 
 
+def _mac_restart(home: Home, job: Job) -> str:
+    if sh(["launchctl", "print", _gui(job)]).returncode != 0:
+        return _mac_start(home, job)
+    r = sh(["launchctl", "kickstart", "-k", _gui(job)])  # -k: kill the running one first
+    return "" if r.returncode == 0 else err(r)
+
+
 def _mac_uninstall(home: Home, job: Job) -> None:
     sh(["launchctl", "bootout", _gui(job)])
     plist_path(job).unlink(missing_ok=True)
@@ -287,6 +299,11 @@ def _linux_stop(home: Home, job: Job) -> str:
     return "" if r.returncode == 0 else err(r)
 
 
+def _linux_restart(home: Home, job: Job) -> str:
+    r = sh(["systemctl", "--user", "restart", job.unit])
+    return "" if r.returncode == 0 else err(r)
+
+
 def _linux_uninstall(home: Home, job: Job) -> None:
     sh(["systemctl", "--user", "disable", "--now", job.unit])
     unit_path(job).unlink(missing_ok=True)
@@ -303,6 +320,7 @@ OPS = {
     "macos": (_mac_install, _mac_start, _mac_stop, _mac_uninstall, _mac_status),
     "linux": (_linux_install, _linux_start, _linux_stop, _linux_uninstall, _linux_status),
 }
+RESTART = {"windows": _win_restart, "macos": _mac_restart, "linux": _linux_restart}
 
 
 def install(home: Home, messages: bool, start_now: bool = False, agent: bool = True, canvas: bool = False) -> list[str]:
@@ -348,6 +366,52 @@ def stop(home: Home) -> list[str]:
     do_stop, do_status = OPS[platform()][2], OPS[platform()][4]
     return [f"{job.key}: " + (f"couldn't stop: {p}" if (p := do_stop(home, job)) else "stopped")
             for job in jobs(home) if any(do_status(home, job))]
+
+
+def restart(home: Home) -> list[str]:
+    """Stop and start each installed job, so it picks up config changes."""
+    do_restart = RESTART[platform()]
+    return [f"{job.key}: " + (f"couldn't restart: {p}" if (p := do_restart(home, job)) else "restarted")
+            for job in installed(home)]
+
+
+def running(home: Home, key: str = "daimon") -> bool:
+    do_status = OPS[platform()][4]
+    return any(job.key == key and do_status(home, job)[1] for job in jobs(home))
+
+
+def detach(where: Path, name: str, text: str) -> None:
+    """Run a script (.cmd on Windows, sh elsewhere) on its own, outside this process and the background service,
+    so stopping them doesn't stop it."""
+    where.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        cmd = where / f"{name}.cmd"
+        cmd.write_text(text, encoding="utf-8")
+        vbs = where / f"{name}.vbs"  # wscript starts the script hidden and exits, so nothing is its parent
+        vbs.write_text(f'CreateObject("WScript.Shell").Run "cmd /c ""{cmd}""", 0, False\r\n', encoding="utf-8")
+        subprocess.Popen(["wscript.exe", str(vbs)], close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    script = where / f"{name}.sh"
+    script.write_text(text, encoding="utf-8")
+    # Under systemd, systemd-run puts it outside the service, which `service stop` would otherwise take down.
+    argv = ["systemd-run", "--user", "--collect", "--quiet", "sh", str(script)] \
+        if os.environ.get("INVOCATION_ID") and shutil.which("systemd-run") else ["sh", str(script)]
+    subprocess.Popen(argv, start_new_session=True, close_fds=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def restart_later(home: Home, after_s: int = 5) -> Path:
+    """`daimon service restart` from outside the service, after `after_s` seconds (for the agent restarting itself:
+    its last reply gets out first). Returns the log."""
+    log = home.cache / "restart.log"
+    argv = " ".join(f'"{a}"' for a in (sys.executable, "-m", "daimon", "--home", str(home.root), "service", "restart"))
+    if os.name == "nt":  # no console here, so no `timeout`
+        text = f"@echo off\r\nping -n {after_s + 1} 127.0.0.1 >nul\r\n{argv} >> \"{log}\" 2>&1\r\n"
+    else:
+        text = f"#!/bin/sh\nsleep {after_s}\n{argv} >> \"{log}\" 2>&1\n"
+    detach(home.cache, "restart", text)
+    return log
 
 
 def status(home: Home) -> list[str]:

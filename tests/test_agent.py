@@ -193,6 +193,30 @@ def test_wake(home, monkeypatch):
     asyncio.run(go())
 
 
+def test_restart_agent_asks_and_restarts_after_the_reply(home, monkeypatch):
+    from daimon.setup import service
+    script(monkeypatch, {"main": [call("restart_agent"), "Restarting now.", call("restart_agent"), "Can't here."]})
+    restarts = []
+    monkeypatch.setattr(service, "restart_later", lambda h: restarts.append(h.root))
+
+    async def go():
+        s = Surface()
+        a = Agent(home, s)
+        await a.start(scheduler=False)
+        try:
+            monkeypatch.setattr(service, "running", lambda h: True)
+            assert await a.send("Restart yourself.") == "Restarting now."
+            await until(lambda: restarts)
+            assert s.asked == [("restart_agent", "main")] and restarts == [home.root]
+            monkeypatch.setattr(service, "running", lambda h: False)
+            assert await a.send("Restart yourself.") == "Can't here."
+            await asyncio.sleep(0.2)
+            assert restarts == [home.root]
+        finally:
+            await a.stop()
+    asyncio.run(go())
+
+
 def test_routines_fire_once_and_reschedule(home, monkeypatch):
     model = script(monkeypatch, {"main": ["Grades look fine."], "researcher": ["Checked the news.", "[quiet]"]})
     home.write("routines/grades.md", "---\nschedule: daily 09:00\n---\nCheck the user's grades.\n")

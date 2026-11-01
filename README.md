@@ -107,7 +107,7 @@ Chat commands: `/tasks`, `/kg QUERY`, `/tools`, `/history`, `/cost`, `/compact`,
 ```bash
 daimon service install --start   # start at login, and now
 daimon service status
-daimon service stop | start
+daimon service stop | start | restart
 daimon service uninstall
 ```
 

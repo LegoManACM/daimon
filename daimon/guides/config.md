@@ -4,7 +4,8 @@ description: runtime settings in config.yaml. Memory cap, steps per turn, compac
 # config.yaml
 
 Runtime settings. Editing it asks the user unless `self_edit: free`. It's checked as YAML before saving.
-Most keys take effect on your next step; channels and harness drivers on restart.
+Most keys take effect on your next step; channels and harness drivers on restart (`restart_agent`, which the user
+approves; it only works when you run as the background service).
 
 | Key | Default | What it does |
 |---|---|---|

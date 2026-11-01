@@ -165,22 +165,6 @@ def launch(home: Home | None, version: str, wait_pid: int | None) -> Path:
                            "(from a source checkout: git pull)")
     restart = bool(home) and running_jobs(home)
     where = home.cache if home and home.exists() else Path.home() / ".daimon-update"
-    where.mkdir(parents=True, exist_ok=True)
     log = where / "update.log"
-    text = script(home, version, wait_pid, restart, folder, log)
-    if os.name == "nt":
-        cmd = where / "update.cmd"
-        cmd.write_text(text, encoding="utf-8")
-        vbs = where / "update.vbs"  # wscript starts the script hidden and exits, so nothing is its parent
-        vbs.write_text(f'CreateObject("WScript.Shell").Run "cmd /c ""{cmd}""", 0, False\r\n', encoding="utf-8")
-        subprocess.Popen(["wscript.exe", str(vbs)], close_fds=True, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        sh = where / "update.sh"
-        sh.write_text(text, encoding="utf-8")
-        # Under systemd, systemd-run puts it outside the service, which `service stop` would otherwise take down.
-        argv = ["systemd-run", "--user", "--collect", "--quiet", "sh", str(sh)] \
-            if os.environ.get("INVOCATION_ID") and shutil.which("systemd-run") else ["sh", str(sh)]
-        subprocess.Popen(argv, start_new_session=True, close_fds=True, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    service.detach(where, "update", script(home, version, wait_pid, restart, folder, log))
     return log

@@ -55,6 +55,7 @@ class Agent:
         self.auto_update = False  # `daimon run` turns it on; updates.auto in config.yaml decides
         self.paused = False  # set from the web page: routines, wakes and queued tasks wait; chat still works
         self._jobs_queued = False
+        self._restart = False  # set by restart_agent; happens once the turn's reply is out
         self.runner.jobs.on_done = self._jobs_done
 
     # ---- lifecycle -----------------------------------------------------------------------------------
@@ -121,6 +122,16 @@ class Agent:
                 lines.append("No logged event matches it yet (recent_events shows what has arrived).")
             return "\n".join(lines)
 
+        async def restart_agent(_args: dict[str, Any]) -> str:
+            from .setup import service
+            if not await asyncio.to_thread(service.running, self.home):
+                return ("Can't: you aren't running as the background service (this is `daimon chat` or a `daimon run` "
+                        "in a terminal), so nothing would start you again. Ask the user to restart you.")
+            self._restart = True
+            busy = len(self.workers)
+            return "Restarting once this reply is out; back in under a minute." + (
+                f" {busy} running task{'s' if busy != 1 else ''} stop and start over after." if busy else "")
+
         obj = {"type": "object", "properties": {}}
         return tasktools.main_tools(self.home, self.tasks, self._tick.set, self.projects) + [
             Tool("compact_conversation", "Fold the older part of this conversation into its summary.",
@@ -133,7 +144,11 @@ class Agent:
             Tool("preview_reaction", "Check a reaction (reactions/<name>.md, or a draft passed as content) without "
                  "running it: whether its tool exists and what it would call for the latest matching event.",
                  {**obj, "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
-                  "required": ["name"]}, preview_reaction, lambda _a: "auto")]
+                  "required": ["name"]}, preview_reaction, lambda _a: "auto"),
+            Tool("restart_agent", "Restart yourself (the background service and its add-ons), for changes that only "
+                 "take effect on a restart: channels or the web page in config.yaml, mcp.json, an add-on. It happens "
+                 "after this reply is sent; running tasks stop and start over.",
+                 obj, restart_agent, lambda _a: "ask")]
 
     # ---- main thread ---------------------------------------------------------------------------------
     def _jobs_done(self, who: str) -> None:
@@ -167,6 +182,17 @@ class Agent:
                     item.reply.set_exception(e)
                 else:
                     self.surface.event("error", f"handling {item.kind}: {e}")
+            if self._restart:
+                self._restart = False
+                await self._restart_now()
+
+    async def _restart_now(self) -> None:
+        from .setup import service
+        try:
+            await asyncio.to_thread(service.restart_later, self.home)
+            self.surface.event("notify", "Restarting; back in under a minute.")
+        except Exception as e:  # noqa: BLE001
+            self.surface.event("error", f"restart: {e}")
 
     def _message(self, item: Item) -> str:
         if item.kind == "user":
