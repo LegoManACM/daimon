@@ -1,6 +1,6 @@
 [project]
 name = "daimon-canvas"
-version = "0.2.0"
+version = "0.2.1"
 description = "Canvas LMS for Daimon: an MCP server for your classes, homework, grades and course files"
 requires-python = ">=3.11"
 dependencies = [
