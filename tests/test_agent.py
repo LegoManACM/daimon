@@ -172,7 +172,7 @@ def test_worker_question_round_trip(home, monkeypatch):
 
 
 def test_wake(home, monkeypatch):
-    soon = (now() - timedelta(minutes=1)).isoformat(timespec="minutes")
+    soon = now().isoformat(timespec="minutes")  # due now; a minute back could pass the 2-minute "in the past" cutoff
     model = script(monkeypatch, {
         "main": [call("schedule_wake", when=soon, note="Remind the user to stretch."), "I'll remind you.",
                  "Time to stretch!"],
