@@ -119,12 +119,28 @@ def install_args(version: str) -> list[str]:
     return args
 
 
+def wheels(version: str) -> list[tuple[str, str]]:
+    """(package, wheel) for Daimon and the add-ons this install has."""
+    return [(n.replace("_", "-"), wheel(n, version)) for n in ("daimon", *ADDONS)
+            if n == "daimon" or importlib.util.find_spec(n)]
+
+
+def receipt(version: str, entrypoint: str) -> str:
+    """The record uv keeps of a tool install, for when pip had to do the install (so `uv tool` still knows it)."""
+    reqs = "".join(f"    {{ name = \"{n}\", url = '{w}' }},\n" for n, w in wheels(version))
+    return (f"[tool]\nrequirements = [\n{reqs}]\npython = \"3.12\"\nentrypoints = [\n"
+            f"    {{ name = \"daimon\", install-path = '{entrypoint}', from = \"daimon\" }},\n]\n\n[tool.options]\n")
+
+
 def running_jobs(home: Home) -> bool:
     return home.exists() and any(", running" in line for line in service.status(home))
 
 
-def script(home: Home | None, version: str, wait_pid: int | None, restart: bool, folder: Path, log: Path) -> str:
-    """The updater: wait for Daimon to exit, stop the background service, install, start it again."""
+def script(home: Home | None, version: str, wait_pid: int | None, restart: bool, folder: Path, log: Path,
+           record: Path | None = None) -> str:
+    """The updater: wait for Daimon to exit, stop the background service, install, start it again. On Windows,
+    if uv keeps failing (virus scanning can hold the files it's moving), pip installs into a fresh folder instead
+    and `record` (see receipt) is copied in."""
     uv, daimon = shutil.which("uv") or "uv", shutil.which("daimon") or "daimon"
     home_args = f'--home "{home.root}" ' if home and home.exists() else ""
     args = " ".join(f'"{a}"' for a in install_args(version))
@@ -135,12 +151,24 @@ def script(home: Home | None, version: str, wait_pid: int | None, restart: bool,
                                "(ping -n 2 127.0.0.1 >nul & goto wait)"]  # no console here, so no `timeout`
         if restart:
             lines.append(f'"{daimon}" {home_args}service stop >> %LOG% 2>&1')
+        python = folder / "Scripts" / "python.exe"
+        pip = " ".join(f'"{w}"' for _, w in wheels(version))
         lines += ["set n=0", ":install", f'"{uv}" {args} >> %LOG% 2>&1 && goto done', "set /a n+=1",
-                  "if %n% geq 4 (echo update failed: run the install line again to get Daimon back >> %LOG% "
-                  "& goto after)",
+                  "if %n% geq 4 goto pip",
                   # uv sometimes can't delete the old install even with nothing running from it; cmd can
                   f'ping -n 4 127.0.0.1 >nul & rmdir /s /q "{folder}" >nul 2>&1', "goto install",
-                  ":done", f"echo updated to {version} >> %LOG%", ":after"]
+                  # pip writes the files in place rather than moving them, which scanning doesn't trip over
+                  ":pip", "echo uv couldn't install, trying pip >> %LOG%",
+                  f'rmdir /s /q "{folder}" >nul 2>&1',
+                  f'"{uv}" venv --python 3.12 --seed --clear "{folder}" >> %LOG% 2>&1 || goto failed',
+                  f'"{python}" -m pip install --disable-pip-version-check {pip} >> %LOG% 2>&1 || goto failed']
+        if record:
+            lines.append(f'copy /y "{record}" "{folder / "uv-receipt.toml"}" >nul')
+        if shutil.which("daimon"):
+            lines.append(f'copy /y "{folder / "Scripts" / "daimon.exe"}" "{daimon}" >nul')
+        lines += ["goto done", ":failed",
+                  "echo update failed: run `daimon update` again, or the installer, to get Daimon back >> %LOG%",
+                  "goto after", ":done", f"echo updated to {version} >> %LOG%", ":after"]
         if restart:
             lines.append(f'"{daimon}" {home_args}service start >> %LOG% 2>&1')
         return "\r\n".join(lines) + "\r\n"
@@ -166,5 +194,10 @@ def launch(home: Home | None, version: str, wait_pid: int | None) -> Path:
     restart = bool(home) and running_jobs(home)
     where = home.cache if home and home.exists() else Path.home() / ".daimon-update"
     log = where / "update.log"
-    service.detach(where, "update", script(home, version, wait_pid, restart, folder, log))
+    record = None
+    if os.name == "nt" and (entrypoint := shutil.which("daimon")):
+        where.mkdir(parents=True, exist_ok=True)
+        record = where / "uv-receipt.toml"
+        record.write_text(receipt(version, entrypoint), encoding="utf-8")
+    service.detach(where, "update", script(home, version, wait_pid, restart, folder, log, record))
     return log

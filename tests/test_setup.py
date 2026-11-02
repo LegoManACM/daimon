@@ -1,6 +1,7 @@
 """`daimon setup` and `daimon service`, with no TTY, network, model calls or real service managers."""
 import io
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -524,6 +525,23 @@ def test_update_script_keeps_addons_and_restarts(home, tmp_path, monkeypatch):
     assert text.index("service stop") < text.index("tool") < text.rindex("service start")
     quiet = update.script(None, "0.2.0", None, False, tmp_path / "tool", tmp_path / "update.log")
     assert "service" not in quiet
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the pip fallback is for Windows file locks")
+def test_update_script_falls_back_to_pip(home, tmp_path, monkeypatch):
+    import tomllib
+    from daimon.setup import update
+    monkeypatch.setattr(update.importlib.util, "find_spec", lambda m: m == "daimon_canvas")
+    record = tmp_path / "uv-receipt.toml"
+    text = update.script(home, "0.2.0", None, True, tmp_path / "tool", tmp_path / "update.log", record)
+    assert text.index("tool\" \"install") < text.index(":pip") < text.index("pip install") < text.index(":done")
+    assert "daimon_canvas-0.2.0" in text[text.index("pip install"):] and str(record) in text
+    assert text.index(":failed") < text.rindex("service start")  # a failed install still starts what's there
+    got = tomllib.loads(update.receipt("0.2.0", r"C:\bin\daimon.exe"))["tool"]
+    assert [r["name"] for r in got["requirements"]] == ["daimon", "daimon-canvas"]
+    assert got["entrypoints"][0]["install-path"] == r"C:\bin\daimon.exe"
+    monkeypatch.setenv("DAIMON_RELEASE_DIR", r"C:\Users\me\release")  # a local build's paths have backslashes
+    assert tomllib.loads(update.receipt("0.2.0", "x"))["tool"]["requirements"][0]["url"].startswith("C:\\Users")
 
 
 def test_update_command(home, monkeypatch, capsys):
