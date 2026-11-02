@@ -26,6 +26,21 @@ def auto(name: str, description: str, schema: dict[str, Any], fn: Callable[..., 
     return Tool(name, description, schema, run, lambda _a: "auto")
 
 
+def resolve_when(when: str | None, in_minutes: float | None = None) -> str | None:
+    """Relative times avoid clock arithmetic by the model; absolute ones mustn't be in the past."""
+    if in_minutes is not None:
+        return (now() + timedelta(minutes=float(in_minutes))).isoformat(timespec="minutes")
+    if when and parse_time(when) < now() - timedelta(minutes=2):
+        raise ValueError(f"{when} is in the past (it's now {now():%Y-%m-%dT%H:%M}). Use in_minutes for "
+                         "relative times.")
+    return when
+
+
+def create_wake(store: TaskStore, note: str, run_at: str, created_by: str = "agent") -> Task:
+    """A reminder: a task for main that arrives in its inbox at run_at."""
+    return store.create(note.splitlines()[0][:60], note, worker="main", run_at=run_at, created_by=created_by)
+
+
 def task_thread(home: Home, task_id: str) -> Thread:
     return Thread(home.root / "threads" / "tasks" / task_id)
 
@@ -37,15 +52,6 @@ def main_tools(home: Home, store: TaskStore, wake: Callable[[], None],
 
     def check_worker(worker: str) -> None:
         home.worker(worker)  # raises if workers/<name>.md doesn't exist
-
-    def resolve_when(when: str | None, in_minutes: float | None) -> str | None:
-        """Relative times avoid clock arithmetic by the model; absolute ones mustn't be in the past."""
-        if in_minutes is not None:
-            return (now() + timedelta(minutes=float(in_minutes))).isoformat(timespec="minutes")
-        if when and parse_time(when) < now() - timedelta(minutes=2):
-            raise ValueError(f"{when} is in the past (it's now {now():%Y-%m-%dT%H:%M}). Use in_minutes for "
-                             "relative times.")
-        return when
 
     def create_task(title: str, brief: str, worker: str | None = None, status: str = "queued",
                     run_at: str | None = None, in_minutes: float | None = None, due: str | None = None,
@@ -67,7 +73,7 @@ def main_tools(home: Home, store: TaskStore, wake: Callable[[], None],
         run_at = resolve_when(when, in_minutes)
         if not run_at:
             raise ValueError("give either when (ISO time) or in_minutes")
-        task = store.create(note.splitlines()[0][:60], note, worker="main", run_at=run_at)
+        task = create_wake(store, note, run_at)
         wake()
         return f"Scheduled: you'll be woken at {task.meta['run_at']} with this note. ({task.id})"
 

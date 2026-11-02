@@ -9,9 +9,10 @@ Add-ons are separate programs (text messages, calendar, Canvas, ...) that you re
 lists the connected ones with what each is for, and the ones not connected yet. For a connected one,
 `guide("<name>")` shows its tools, their consent levels and the events it sends.
 
-- The user connects an add-on with `daimon setup` (or just that step: `daimon config addons`): it installs it, signs in to the account (Google, Microsoft,
+- The user connects an add-on on the web page (Connections → Connect), or in a terminal with `daimon config addons`:
+  it installs it, signs in to the account (Google, Microsoft,
   Canvas token, phone pairing) and adds it to `mcp.json` with sensible consent. You can't do the sign-in; when a
-  request needs an add-on that isn't connected, say which one and that `daimon setup` connects it.
+  request needs an add-on that isn't connected, say which one and that Connections on the web page connects it.
 - Add-ons don't know each other. Connect them with reactions (guide `reactions`), never by asking the user to
   change an add-on's settings.
 
@@ -39,7 +40,7 @@ add_mcp_server(name="files", reason="read the user's notes folder",
 
 Keys and tokens live in the user's secrets file, outside your home folder; you can't read it. Config refers to
 them as `${NAME}` and the value is filled in when used. When something needs a key that's missing, tell the
-user the variable name to add to the secrets file (or `daimon setup`). Never ask them to paste a secret into
+user the variable name to set under Connections → Keys & secrets on the web page (or in the secrets file). Never ask them to paste a secret into
 the chat.
 
 ## Channels
@@ -51,5 +52,5 @@ Changes to config.yaml ask, and channels take effect when the agent restarts (`r
 The web page (`web:` in config.yaml) is a channel too: the user chats with you there and watches you work (each
 worker's live progress, tool calls, tasks, spend, your change history). `listen` is where it's reachable (localhost,
 tailscale, all, or an IP) and `auth` who gets in (token: WEB_TOKEN from the secrets file; tailscale: only their own
-Tailscale devices; none). Point the user to `daimon config web` to set it up, `daimon web` to open it signed in,
+Tailscale devices; none). Point the user to Settings → Web page (or `daimon config web`) to set it up, `daimon web` to open it signed in,
 and `daimon web --link` for a sign-in link to use on another device. Never put WEB_TOKEN in a message.

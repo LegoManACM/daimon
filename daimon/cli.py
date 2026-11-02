@@ -336,7 +336,8 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"daimon {version()}")
     parser.add_argument("--home", help="agent home folder (default: $DAIMON_HOME or ~/.daimon)")
     sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("setup", help="step-by-step setup: model, Telegram, add-ons, background running")
+    p_setup = sub.add_parser("setup", help="quick setup (home, model, where to open it); the rest happens in the browser")
+    p_setup.add_argument("--full", action="store_true", help="the long version: every step in the terminal")
     p_config = sub.add_parser("config", help="change one part of the setup (no part: pick from a menu)")
     p_config.add_argument("section", nargs="?", choices=["model", "key", "knowledge", "telegram", "web", "claude",
                                                          "addons", "background", "updates", "show"])
@@ -378,7 +379,7 @@ def main() -> None:
             parser.print_help()
     elif args.cmd == "setup":
         from .setup.wizard import run as setup
-        sys.exit(setup(args.home))
+        sys.exit(setup(args.home, full=args.full))
     elif args.cmd == "config":
         from .setup.wizard import configure
         sys.exit(configure(args.home, args.section))

@@ -294,7 +294,7 @@ def test_wizard_minimal(tmp_path, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
     monkeypatch.setattr(wizard, "fetch_models", lambda p, key: [Model("anthropic/claude-opus-5-5")])
-    ask = Scripted(str(tmp_path / "home"), "home", "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "no", [])
+    ask = Scripted(str(tmp_path / "home"), "home", "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "no", [], False)
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers
     h = Home(tmp_path / "home")
@@ -328,7 +328,7 @@ def test_wizard_telegram_and_background(home, monkeypatch, clean_env):
 def test_wizard_model_retry_then_keep(home, monkeypatch, clean_env):
     monkeypatch.setattr(wizard, "check_model", lambda m: "AuthenticationError: bad key")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
-    ask = Scripted(str(home.root), "keep", "home", "anthropic", "", "skip", "anthropic/claude-haiku-5-5", "keep", "no", [])
+    ask = Scripted(str(home.root), "keep", "home", "anthropic", "", "skip", "anthropic/claude-haiku-5-5", "keep", "no", [], False)
     assert make_wizard(ask).run() == 0
     assert home.worker("main").model == "anthropic/claude-haiku-5-5"
 
@@ -380,7 +380,7 @@ def test_wizard_key_rejected_then_pasted_again_and_searched(home, monkeypatch, c
     monkeypatch.setattr(wizard, "check_model", lambda m: "")
     monkeypatch.setattr(wizard, "claude_path", lambda: None)
     ask = Scripted(str(home.root), "keep", "home", "openrouter", "sk-or-bad", "again", "sk-or-good",
-                   "?search", "special", "openrouter/z/special", "no", [])
+                   "?search", "special", "openrouter/z/special", "no", [], False)
     w = make_wizard(ask)
     assert w.run() == 0 and not ask.answers
     assert tries == ["sk-or-bad", "sk-or-good"]
@@ -635,3 +635,143 @@ def test_daimon_web_waits_for_a_starting_agent(home, monkeypatch, capsys):
     monkeypatch.setattr(service, "restart", lambda h: ["daimon: restarted"])
     with pytest.raises(SystemExit, match="after a restart"):
         cli.cmd_web(web_args(home))
+
+
+# ---- the fast track --------------------------------------------------------------------------------------
+@pytest.fixture
+def fast(tmp_path, monkeypatch, clean_env):
+    """A fast-track run with everything outside the files stubbed; returns what it did."""
+    monkeypatch.setenv("DAIMON_SECRETS", str(tmp_path / "secrets.env"))
+    monkeypatch.delenv("WEB_TOKEN", raising=False)
+    from daimon.web import access
+    seen = {"installed": [], "opened": [], "probed": []}
+    monkeypatch.setattr(wizard, "check_model", lambda m: "")
+    monkeypatch.setattr(wizard, "fetch_models", lambda p, key: [Model("anthropic/claude-opus-5-5")])
+    monkeypatch.setattr(access, "tailscale_cli", lambda: None)
+    monkeypatch.setattr(wizard.service, "install",
+                        lambda h, **kw: seen["installed"].append(kw) or ["daimon: task; started"])
+    monkeypatch.setattr(wizard, "wait_for_page", lambda probe, seconds=0: seen["probed"].append(probe) or True)
+    monkeypatch.setattr(wizard.webbrowser, "open", lambda u: seen["opened"].append(u) or True)
+    seen["root"] = tmp_path / "home"
+    return seen
+
+
+def fast_run(root, *answers):
+    ask = Scripted(str(root), "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", *answers)
+    w = make_wizard(ask)
+    assert w.run(full=False) == 0 and not ask.answers
+    return w, ask
+
+
+def test_fast_track_asks_three_things_and_writes_them(fast):
+    w, ask = fast_run(fast["root"], "localhost")
+    assert ask.asked[0] == "Where should the agent live?" and ask.asked[-1] == "Where will you open it?"
+    assert not any("Telegram" in q or "knowledge" in q.lower() for q in ask.asked)
+    h = Home(fast["root"])
+    assert h.worker("main").model == "anthropic/claude-opus-5-5"
+    assert "ANTHROPIC_API_KEY=sk-ant-test" in h.secrets_file.read_text(encoding="utf-8")
+    assert "WEB_TOKEN=" in h.secrets_file.read_text(encoding="utf-8")
+    web = h.config()["web"]
+    assert web["enabled"] and web["listen"] == "localhost" and web["auth"] == "token"
+    out = w.out.file.getvalue()
+    assert "1/3" in out and "2/3" in out and "3/3" in out and "/8" not in out and "/7" not in out
+    assert "Finish setup in your browser" in out and "daimon setup --full" in out
+
+
+def test_fast_track_starts_the_agent_with_only_the_web_page_on(fast):
+    fast_run(fast["root"], "localhost")
+    assert fast["installed"] == [{"messages": False, "start_now": True, "agent": True}]
+    assert len(fast["opened"]) == 1 and fast["opened"][0].endswith("#setup") and "?token=" in fast["opened"][0]
+    assert fast["opened"][0].count("#") == 1
+    assert fast["probed"] and fast["probed"][0][0] == "127.0.0.1"
+
+
+def test_fast_track_offers_tailscale_first_when_it_is_up(fast, monkeypatch):
+    from daimon.web import access
+    monkeypatch.setattr(access, "tailscale_cli", lambda: "/bin/tailscale")
+    monkeypatch.setattr(access, "resolve_listen",
+                        lambda listen: "100.64.0.1" if listen == "tailscale" else "127.0.0.1")
+    seen = []
+    real = Scripted
+
+    class Spy(real):
+        def select(self, message, choices, default=None):
+            if message == "Where will you open it?":
+                seen.append(([t for t, _ in choices], default))
+            return super().select(message, choices, default)
+    ask = Spy(str(fast["root"]), "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "tailscale")
+    assert make_wizard(ask).run(full=False) == 0
+    titles, default = seen[0]
+    assert "(detected)" in titles[0] and default == "tailscale" and len(titles) == 3
+    assert Home(fast["root"]).config()["web"]["auth"] == "tailscale"
+
+
+def test_fast_track_without_tailscale_lists_two_choices(fast):
+    seen = []
+
+    class Spy(Scripted):
+        def select(self, message, choices, default=None):
+            if message == "Where will you open it?":
+                seen.append([v for _, v in choices])
+            return super().select(message, choices, default)
+    ask = Spy(str(fast["root"]), "anthropic", "  'sk-ant-test'\n", "anthropic/claude-opus-5-5", "all")
+    w = make_wizard(ask)
+    assert w.run(full=False) == 0
+    assert seen == [["localhost", "all"]]
+    assert Home(fast["root"]).config()["web"]["listen"] == "all"
+
+
+@pytest.mark.parametrize("how", ["raises", "not started"])
+def test_fast_track_says_when_it_cannot_run_in_the_background(fast, monkeypatch, how):
+    def install(h, **kw):
+        if how == "raises":
+            raise OSError("no scheduler")
+        return ["daimon: task; not started: access denied"]
+    monkeypatch.setattr(wizard.service, "install", install)
+    w, _ = fast_run(fast["root"], "localhost")
+    out = w.out.file.getvalue()
+    assert "daimon run" in out and "Couldn't start it in the background" in out
+    assert not fast["opened"] and not fast["probed"]
+
+
+def test_setup_dispatch_fast_and_full(monkeypatch):
+    calls = []
+    monkeypatch.setattr(wizard, "run", lambda home, full=False: calls.append((home, full)) or 0)
+    for argv, want in ((["setup"], False), (["setup", "--full"], True)):
+        monkeypatch.setattr(sys, "argv", ["daimon", *argv])
+        with pytest.raises(SystemExit):
+            cli.main()
+        assert calls[-1][1] is want
+
+
+def test_wizard_run_full_flag_picks_the_steps(home, monkeypatch, clean_env):
+    w = make_wizard(Scripted())
+    order = []
+    for name in ("welcome", "knowledge", "model", "telegram", "claude", "addons", "background", "finish", "launch"):
+        monkeypatch.setattr(w, name, lambda n=name: order.append(n))
+    monkeypatch.setattr(w, "web", lambda first_run=False: order.append("web"))
+    w.run(full=False)
+    assert order == ["welcome", "model", "web", "launch"]
+    order.clear()
+    w.run(full=True)
+    assert order == ["welcome", "knowledge", "model", "telegram", "claude", "addons", "background", "finish"]
+
+
+def test_background_allows_the_agent_with_web_on_and_no_telegram(home, monkeypatch, clean_env):
+    home.set_option("web", "enabled", True)
+    installed = {}
+    monkeypatch.setattr(wizard.service, "install", lambda h, **kw: installed.update(kw) or ["daimon: somewhere"])
+    ask = Scripted(True, True, False)  # keep running, start now, no auto-updates
+    w = make_wizard(ask)
+    w.home = home
+    w.background()
+    assert not ask.answers and installed["agent"] is True and installed["start_now"] is True
+    assert "needs Telegram or the web page" not in w.out.file.getvalue()
+
+
+def test_background_without_telegram_or_web_still_warns(home, monkeypatch, clean_env):
+    home.set_option("web", "enabled", False)
+    w = make_wizard(Scripted())
+    w.home = home
+    w.background()
+    assert "needs Telegram or the web page" in w.out.file.getvalue()

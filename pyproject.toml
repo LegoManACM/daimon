@@ -14,6 +14,7 @@ dependencies = [
     "rich>=13",
     "starlette>=0.40",        # the web page (also what the mcp package serves with)
     "uvicorn>=0.30",
+    "segno>=1.6",             # QR codes for the sign-in link (setup and the web page)
 ]
 
 [project.scripts]

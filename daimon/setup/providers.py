@@ -43,11 +43,12 @@ class Model:
 
     def describe(self) -> str:
         bits = [self.name] if self.name and self.name != self.id.split("/", 1)[-1] else []
-        if self.context:
+        if self.context >= 1000:
             bits.append(f"{self.context // 1000}k context" if self.context < 1_000_000 else
                         f"{self.context / 1_000_000:g}M context")
         if self.price:
-            bits.append("free" if self.price == (0, 0) else f"${self.price[0]:g} in / ${self.price[1]:g} out per M")
+            bits.append("free" if self.price == (0, 0) else f"${self.price[0]:g} per M" if self.price[1] is None else
+                        f"${self.price[0]:g} in / ${self.price[1]:g} out per M")
         return " · ".join(bits)
 
 
@@ -125,6 +126,39 @@ def fetch_models(p: Provider, key: str = "") -> list[Model]:
         if models is None:
             raise ConnectionError(f"Ollama isn't answering at {OLLAMA}")
         return [Model(m) for m in models]
+    return []
+
+
+LOCAL_EMBEDDERS = re.compile(r"embed|nomic|bge|mxbai|minilm|arctic|gte|e5", re.I)  # Ollama doesn't say which embed
+
+
+def fetch_embedding_models(p: Provider, key: str = "") -> list[Model]:
+    """The provider's models that turn text into vectors (knowledge.embeddings), as LiteLLM ids. Anthropic has none."""
+    if p.key == "openai":
+        data = _get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"})
+        return [Model(f"openai/{m['id']}") for m in data.get("data", []) if "embedding" in m["id"]]
+    if p.key == "openrouter":
+        _get("https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {key}"})
+        out = []
+        for m in _get("https://openrouter.ai/api/v1/embeddings/models").get("data", []):
+            if "text" not in ((m.get("architecture") or {}).get("input_modalities") or ["text"]):
+                continue
+            try:
+                cost = round(float((m.get("pricing") or {})["prompt"]) * 1e6, 4)
+                price = (0, 0) if cost == 0 else (cost, None)  # embeddings only cost going in
+            except (KeyError, TypeError, ValueError):
+                price = None
+            out.append(Model(f"openrouter/{m['id']}", m.get("name", ""), m.get("context_length") or 0, price))
+        return out
+    if p.key == "gemini":
+        data = _get("https://generativelanguage.googleapis.com/v1beta/models", params={"key": key, "pageSize": 1000})
+        return [Model("gemini/" + m["name"].removeprefix("models/"), m.get("displayName", ""))
+                for m in data.get("models", []) if "embedContent" in m.get("supportedGenerationMethods", [])]
+    if p.key == "ollama":
+        models = ollama_models()
+        if models is None:
+            raise ConnectionError(f"Ollama isn't answering at {OLLAMA}")
+        return [Model("ollama/" + m.removeprefix("ollama_chat/")) for m in models if LOCAL_EMBEDDERS.search(m)]
     return []
 
 

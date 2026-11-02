@@ -1,12 +1,14 @@
 """The `daimon setup` wizard: one question at a time. Prompting lives in Wizard; the work is in plain functions."""
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from .providers import (OLLAMA, PROVIDERS, KeyProblem, Model, Provider, clean_ke
                         ollama_models, search)
 
 TELEGRAM_WAIT_S = 120
+PAGE_WAIT_S = 45  # how long the fast track waits for the agent to serve the page
 SHOWN = 15  # models listed at once; search reaches the rest
 
 
@@ -88,6 +91,33 @@ def web_line(home: Home) -> str:
         return "off (`daimon config web`)"
     from ..web.channel import DEFAULT_PORT
     return f"{cfg.get('listen', 'localhost')}, port {cfg.get('port', DEFAULT_PORT)}, "            f"{cfg.get('auth') or ('tailscale' if cfg.get('listen') == 'tailscale' else 'token')}"
+
+
+def wait_for_page(probe: tuple[str, int], seconds: float = PAGE_WAIT_S) -> bool:
+    """True once something accepts connections at `probe` (host, port), within `seconds`."""
+    import socket
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            socket.create_connection(probe, timeout=2).close()
+            return True
+        except OSError:
+            if time.monotonic() > end:
+                return False
+            time.sleep(1)
+
+
+def qr_text(link: str) -> str:
+    """The link as a QR code drawn with terminal characters ('' if it can't be drawn)."""
+    try:
+        import contextlib
+        import segno
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            segno.make(link).terminal(compact=True)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def claude_path() -> str | None:
@@ -164,8 +194,12 @@ class Wizard:
                 "background": "Running in the background", "updates": "Updates",
                 "show": "Show the current settings"}
 
+    FAST_STEPS = 3
+    FAST_NUMBER = {1: 1, 3: 2, 4: 2, 9: 3}  # full-wizard step numbers -> fast-track numbers (9: where you'll open it)
+
     def __init__(self, ask, console=None, home_flag: str | None = None):
         from rich.console import Console
+        self.fast = False
         self.ask, self.out = ask, console or Console(highlight=False)
         self.home_flag = home_flag
         self.history: list[str] = []
@@ -186,7 +220,9 @@ class Wizard:
     def step(self, n: int, title: str) -> None:
         self.top()
         self.out.print()
-        label = f"[bold magenta]{n}/{self.STEPS}[/]  [bold]{title}[/]" if self.numbered else f"[bold]{title}[/]"
+        total = self.FAST_STEPS if self.fast else self.STEPS
+        n = self.FAST_NUMBER.get(n, n) if self.fast else n
+        label = f"[bold magenta]{n}/{total}[/]  [bold]{title}[/]" if self.numbered else f"[bold]{title}[/]"
         self.out.rule(label, align="left", style="magenta")
 
     def say(self, text: str) -> None:
@@ -204,9 +240,15 @@ class Wizard:
         self.out.print(Panel(body, title=title, title_align="left", border_style=style, padding=(1, 2)))
 
     # ---- the steps -----------------------------------------------------------------------------------
-    def run(self) -> int:
+    def run(self, full: bool = True) -> int:
+        self.fast = not full
         try:
             self.welcome()
+            if self.fast:
+                self.model()
+                self.web(first_run=True)
+                self.launch()
+                return 0
             self.knowledge()
             self.model()
             self.telegram()
@@ -248,12 +290,24 @@ class Wizard:
 
     def welcome(self) -> None:
         self.out.clear()
+        if self.fast:
+            self.panel("[bold]Daimon[/] is a personal agent that keeps working in the background.\n\nThree questions "
+                       "here (where it lives, which AI model, where you'll open it); the rest (Telegram, knowledge, "
+                       "add-ons, calendars) you set up in the browser, on this computer or a phone. Arrow keys and "
+                       "Enter; Ctrl+C stops at any point.", "Welcome")
+        else:
+            self.welcome_full()
+        self.step(1, "Home folder")
+        self.home_folder()
+
+    def welcome_full(self) -> None:
         self.panel("[bold]Daimon[/] is a personal agent that keeps working in the background. Everything it is "
                    "(its instructions, memory, workers and settings) lives in markdown files in one folder, which "
                    "you and it can both edit.\n\nThis takes a few minutes. Use the arrow keys and Enter; Ctrl+C stops "
                    "at any point. Later, [bold]daimon config[/] changes any one part.",
                    "Welcome")
-        self.step(1, "Home folder")
+
+    def home_folder(self) -> None:
         while True:
             root = Path(self.ask.text("Where should the agent live?", str(resolve_home(self.home_flag))))
             home = Home(resolve_home(str(root)))
@@ -600,33 +654,37 @@ class Wizard:
         home = self.home
         self.step(8, "Keep it running")
         has_tg = bool(os.environ.get("TELEGRAM_TOKEN"))
+        has_web = bool((home.config().get("web") or {}).get("enabled"))
+        can_ask = has_tg or has_web  # the agent asks before acting on Telegram or on the web page
         messages = "messages" in self.done.addons or "messages" in home.mcp().get("mcpServers", {})
         self.say("Daimon can start at login and keep working in the background: reminders, routines and tasks run "
                  "even with no terminal open.")
-        if not has_tg:
-            self.warn("Running in the background needs Telegram, so it can reach you and ask before acting. Run "
-                      "`daimon config telegram`, then `daimon config background`.")
+        if not can_ask:
+            self.warn("Running in the background needs Telegram or the web page, so it can reach you and ask before "
+                      "acting. Run `daimon config telegram` or `daimon config web`, then `daimon config background`.")
             if not messages or not self.ask.confirm("Start just the text messaging service at login?", True):
                 self.close_messages()
                 return
         elif not self.ask.confirm("Start Daimon at login and keep it running in the background?", True):
             self.close_messages()
             return
-        if has_tg:
+        if can_ask:
+            where = "on Telegram" if has_tg and not has_web else "in the web page (`daimon web`)" if not has_tg \
+                else "on Telegram or in the web page (`daimon web`)"
             self.say("[dim]While it runs in the background, `daimon chat` can't open the same agent (only one copy "
-                     "runs at a time): talk to it on Telegram, or run `daimon service stop` first.[/]")
+                     f"runs at a time): talk to it {where}, or run `daimon service stop` first.[/]")
         start = self.ask.confirm("Start it now?", True)
         if start and self.messages_proc:
             stop_process(self.messages_proc)  # the service starts its own copy
             self.messages_proc = None
         # the Canvas watcher only feeds the agent's inbox, so it runs when the agent does
-        canvas = has_tg and ("canvas" in self.done.addons or "canvas" in home.mcp().get("mcpServers", {}))
-        lines = service.install(home, messages=messages, start_now=start, agent=has_tg, canvas=canvas)
+        canvas = can_ask and ("canvas" in self.done.addons or "canvas" in home.mcp().get("mcpServers", {}))
+        lines = service.install(home, messages=messages, start_now=start, agent=can_ask, canvas=canvas)
         for line in lines:
             self.ok(esc(line))
         self.done.background = lines
         self.done.running = start
-        if has_tg:
+        if can_ask:
             auto = self.ask.confirm("Install new Daimon releases by itself when it's idle? (Otherwise it tells you and "
                                     "`daimon update` installs them.)", False)
             self.set_updates("auto" if auto else "notify")
@@ -638,29 +696,47 @@ class Wizard:
             self.say(f"[dim]The messaging service keeps running for now (pid {self.messages_proc.pid}). After a "
                      "restart, start it with `daimon-messages run`.[/]")
 
-    def web(self) -> None:
+    def web(self, first_run: bool = False) -> None:
         """The web page: where it listens and who gets in (daimon/web/access.py)."""
         from ..web import access
-        from ..web.channel import DEFAULT_PORT
         home = self.home
-        self.step(0, "Web page")
+        self.step(9 if first_run else 0, "Where you'll open it" if first_run else "Web page")
         self.say("A page for chatting with the agent and watching it work: what each worker is doing right now, "
                  "tool calls, tasks, spend and its change history. The running agent serves it (`daimon run` or "
                  "`daimon chat`).")
         cfg = home.config().get("web") or {}
         has_ts = bool(access.tailscale_cli())
-        choices = [("Only on this computer (also for a reverse proxy or tunnel you run here)", "localhost"),
-                   ("My devices on Tailscale" + ("" if has_ts else " (Tailscale isn't installed here)"), "tailscale"),
-                   ("Anything on my network (home Wi-Fi, a VPN); browsers sign in with a token", "all"),
-                   ("A specific address of this computer...", "address"), ("Off", "off")]
-        current = cfg.get("listen", "localhost") if cfg.get("enabled") else "off"
-        pick = self.ask.select("Where should the page be reachable?", choices,
-                               default=current if current in ("localhost", "tailscale", "all", "off") else "address")
+        if first_run:
+            try:
+                up = has_ts and bool(access.resolve_listen("tailscale"))
+            except access.AccessError:
+                up = False
+            choices = ([("Tailscale: my own devices, phone included (detected)", "tailscale")] if up else []) + [
+                ("Only on this computer", "localhost"),
+                ("Anything on my network (browsers sign in with a token)", "all")]
+            pick = self.ask.select("Where will you open it?", choices, default=choices[0][1])
+        else:
+            pick = self.web_choice(cfg, has_ts)
         if pick == "off":
             home.set_option("web", "enabled", False)
             home.commit("setup: web page off", ["config.yaml"])
             self.ok("Web page: off")
             return
+        self.web_apply(pick, cfg, first_run)
+
+    def web_choice(self, cfg: dict, has_ts: bool) -> str:
+        choices = [("Only on this computer (also for a reverse proxy or tunnel you run here)", "localhost"),
+                   ("My devices on Tailscale" + ("" if has_ts else " (Tailscale isn't installed here)"), "tailscale"),
+                   ("Anything on my network (home Wi-Fi, a VPN); browsers sign in with a token", "all"),
+                   ("A specific address of this computer...", "address"), ("Off", "off")]
+        current = cfg.get("listen", "localhost") if cfg.get("enabled") else "off"
+        return self.ask.select("Where should the page be reachable?", choices,
+                               default=current if current in ("localhost", "tailscale", "all", "off") else "address")
+
+    def web_apply(self, pick: str, cfg: dict, first_run: bool = False) -> None:
+        from ..web import access
+        from ..web.channel import DEFAULT_PORT
+        home = self.home
         listen = pick
         if pick == "address":
             listen = self.ask.text("Address (an IP of this computer):", cfg.get("listen", ""))
@@ -670,7 +746,9 @@ class Wizard:
             self.warn(f"{e}. Nothing changed.")
             return
         auth = "token"
-        if listen == "tailscale":
+        if first_run:
+            auth = "tailscale" if listen == "tailscale" else "token"
+        elif listen == "tailscale":
             auth = self.ask.select("Who gets in?", [
                 ("Devices logged in to my Tailscale account (no password)", "tailscale"),
                 ("Anyone on the tailnet with the sign-in token", "token")], default=cfg.get("auth", "tailscale"))
@@ -678,7 +756,7 @@ class Wizard:
             auth = self.ask.select("Ask for a sign-in token?", [
                 ("Yes, a token, once per browser (recommended, and needed behind a tunnel or proxy)", "token"),
                 ("No: anyone who can open it on this computer gets in", "none")], default=cfg.get("auth", "token"))
-        port = self.ask.text("Port:", str(cfg.get("port", DEFAULT_PORT)))
+        port = str(cfg.get("port", DEFAULT_PORT)) if first_run else self.ask.text("Port:", str(cfg.get("port", DEFAULT_PORT)))
         if not port.isdigit():
             self.warn("That isn't a port number. Nothing changed.")
             return
@@ -690,6 +768,8 @@ class Wizard:
         url = access.page_urls(listen, bound, int(port))[0]
         who = {"token": "sign-in token", "tailscale": "your Tailscale devices", "none": "no sign-in"}[auth]
         self.ok(f"Web page: {url} ({who})")
+        if first_run:
+            return
         lines = [f"[bold]{esc(url)}[/]"]
         if auth == "token":
             lines.append(f"\nSign-in link for each browser (keep it private):\n{esc(url)}/?token={esc(os.environ['WEB_TOKEN'])}")
@@ -699,6 +779,52 @@ class Wizard:
         lines.append("\nIt starts with the agent: restart it if it's running (`daimon service restart`). "
                      "After that, `daimon web` opens it.")
         self.panel("\n".join(lines), "Web page")
+
+    def launch(self) -> None:
+        """Fast track's end: start the agent in the background, wait for its page, open it."""
+        from ..cli import web_page
+        from ..web.access import AccessError
+        home = self.home
+        self.say("")
+        self.out.rule("[bold]Starting Daimon[/]", align="left", style="magenta")
+        try:
+            lines = service.install(home, messages=False, start_now=True, agent=True)
+        except Exception as e:  # noqa: BLE001
+            lines = [f"daimon: not started: {e}"]
+        for line in lines:
+            (self.warn if "not started" in line else self.ok)(esc(line))
+        if not lines or any("not started" in line for line in lines):
+            self.warn("Couldn't start it in the background on this computer. Run [bold]daimon run[/] in this "
+                      "terminal and leave it open, then [bold]daimon web[/] opens the page.")
+            return
+        self.done.background, self.done.running = lines, True
+        try:
+            url, link, probe = web_page(home)
+        except AccessError as e:
+            self.warn(f"{esc(str(e))}. `daimon config web` fixes it, then `daimon web` opens the page.")
+            return
+        with self.out.status("Waiting for the page..."):
+            up = wait_for_page(probe)
+        if not up:
+            self.warn("The page isn't answering yet. Give it a moment, then run [bold]daimon web[/] (the log is in "
+                      f"{esc(str(home.cache / 'daimon.log'))}).")
+            return
+        opened = webbrowser.open(link + "#setup")
+        from rich.console import Group
+        from rich.text import Text
+        body: list[Any] = [f"[bold]{esc(url)}/#setup[/]"
+                           + ("" if opened else "\n[dim]Couldn't open a browser here: open it yourself.[/]")]
+        if link != url:
+            body.append("\nAnother device (phone, another computer): open this link once to sign in. Keep it "
+                        f"private:\n{esc(link)}#setup")
+        else:
+            body.append("\nAnother device on your network: open that address.")
+        cfg = home.config().get("web") or {}
+        qr = qr_text(link + "#setup") if cfg.get("listen", "localhost") != "localhost" else ""
+        if qr:
+            body.append(Text.from_ansi("\n" + qr))
+        self.panel(Group(*body), "Finish setup in your browser", "green")
+        self.say("Prefer the terminal for everything? [bold]daimon setup --full[/]")
 
     def updates(self) -> None:
         self.step(0, "Updates")
@@ -762,6 +888,8 @@ class Wizard:
         self.out.clear()
         if d.running and d.telegram:
             nxt = "Message your bot on Telegram: it's running now."
+        elif d.running and (home.config().get("web") or {}).get("enabled"):
+            nxt = "It's running now. Run [bold]daimon web[/] to open its page."
         elif d.running:
             nxt = "The messaging service is running. Run [bold]daimon chat[/] to talk to your agent."
         else:
@@ -793,10 +921,10 @@ def interactive(command: str, go) -> int:
         raise
 
 
-def run(home_flag: str | None = None) -> int:
+def run(home_flag: str | None = None, full: bool = False) -> int:
     if not preflight("daimon setup"):
         return 1
-    return interactive("daimon setup", lambda ask: Wizard(ask, home_flag=home_flag).run())
+    return interactive("daimon setup", lambda ask: Wizard(ask, home_flag=home_flag).run(full=full))
 
 
 def configure(home_flag: str | None = None, section: str | None = None) -> int:

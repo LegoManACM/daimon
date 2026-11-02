@@ -53,6 +53,56 @@ def join_frontmatter(meta: dict[str, Any], body: str) -> str:
     return f"---\n{yaml.safe_dump(meta, sort_keys=False).strip()}\n---\n{body.lstrip()}"
 
 
+def set_yaml_path(text: str, path: list[str], value: Any) -> str:
+    """`path` (a list of keys) set to `value` in YAML text, by editing lines so the comments stay. Works through
+    block mappings at any depth; a flow mapping on the way (`key: {a: 1}`) is rewritten in place. A missing key
+    goes first in its mapping (a missing top-level one at the end of the file)."""
+    lines = text.splitlines()
+    scalar = lambda v: json.dumps(v, ensure_ascii=False)  # noqa: E731 - JSON is YAML
+    indent_of = lambda line: len(line) - len(line.lstrip(" "))  # noqa: E731
+    start, end, indent = 0, len(lines), 0
+    for depth, key in enumerate(path):
+        pad, rest = " " * indent, path[depth + 1:]
+        at = next((i for i in range(start, end) if re.match(rf"^{pad}{re.escape(key)}:(\s|$)", lines[i])), None)
+        if at is None:
+            block = [f"{' ' * (indent + 2 * n)}{k}:" for n, k in enumerate(path[depth:-1])]
+            block.append(f"{' ' * (indent + 2 * (len(path) - 1 - depth))}{path[-1]}: {scalar(value)}")
+            if depth == 0:
+                lines += ["", *block] if lines else block
+            else:
+                lines[start:start] = block
+            return "\n".join(lines) + "\n"
+        comment = re.search(r"\s+#.*$", lines[at])
+        body = lines[at][:comment.start()] if comment else lines[at]
+        body = body.split(":", 1)[1].strip()
+        if not rest:
+            new = f"{pad}{key}: {scalar(value)}"
+            if comment:  # the comment stays in its column, where the lines around it line up
+                column = lines[at].index("#", comment.start())
+                new = new.ljust(column - 1) + " " + comment.group().strip()
+            lines[at] = new
+            return "\n".join(lines) + "\n"
+        if body.startswith("{"):
+            inner = yaml.safe_load(body) or {}
+            node = inner
+            for k in rest[:-1]:
+                node = node.setdefault(k, {})
+            node[rest[-1]] = value
+            flow = yaml.safe_dump(inner, default_flow_style=True, allow_unicode=True).strip()
+            lines[at] = f"{pad}{key}: {flow}" + (f"  {comment.group().strip()}" if comment else "")
+            return "\n".join(lines) + "\n"
+        if body and body not in ("null", "~"):
+            raise ValueError(f"{'.'.join(path[:depth + 1])} isn't a section")
+        if body:
+            lines[at] = f"{pad}{key}:" + (f"  {comment.group().strip()}" if comment else "")
+        child_end = next((i for i in range(at + 1, end) if lines[i].strip() and not lines[i].lstrip().startswith("#")
+                          and indent_of(lines[i]) <= indent), end)
+        start, end = at + 1, child_end
+        indent = next((indent_of(line) for line in lines[start:end]
+                       if line.strip() and not line.lstrip().startswith("#")), indent + 2)
+    return "\n".join(lines) + "\n"
+
+
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -187,21 +237,17 @@ class Home:
 
     def set_option(self, section: str, key: str, value: Any) -> None:
         """Set `section.key` in config.yaml. A text edit, so the file keeps its comments (the line's own too)."""
-        lines = self.read("config.yaml").splitlines()
-        start = next((i for i, line in enumerate(lines) if re.match(rf"^{section}:\s*(#.*)?$", line)), None)
-        new = f"  {key}: {json.dumps(value)}"
-        if start is None:
-            lines += ["", f"{section}:", new]
-        else:
-            end = next((i for i in range(start + 1, len(lines))
-                        if lines[i].strip() and not lines[i][0].isspace() and not lines[i].startswith("#")), len(lines))
-            at = next((i for i in range(start + 1, end) if re.match(rf"^  {key}:", lines[i])), None)
-            if at is None:
-                lines.insert(start + 1, new)
-            else:
-                comment = re.search(r"\s+#.*$", lines[at])
-                lines[at] = f"{new.ljust(27)} {comment.group().strip()}" if comment else new
-        self.write("config.yaml", "\n".join(lines) + "\n")
+        self.set_config([section, key], value)
+
+    def set_config(self, path: list[str], value: Any) -> None:
+        """Set a key at any depth in config.yaml, keeping the file's comments. Checked by reading it back."""
+        text = set_yaml_path(self.read("config.yaml"), path, value)
+        got: Any = yaml.safe_load(text) or {}
+        for key in path:
+            got = got.get(key) if isinstance(got, dict) else None
+        if got != value:
+            raise ValueError(f"couldn't set {'.'.join(path)} in config.yaml")
+        self.write("config.yaml", text)
 
     def models(self) -> dict[str, Any]:
         return self.read_yaml("models.yaml")
@@ -271,6 +317,27 @@ class Home:
         if os.name != "nt":
             path.chmod(0o600)
         os.environ[name] = value
+
+    def secrets(self) -> dict[str, str]:
+        """NAME → value for every secret set in the secrets file."""
+        if not self.secrets_file.exists():
+            return {}
+        out = {}
+        for line in self.secrets_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+        return out
+
+    def remove_secret(self, name: str) -> None:
+        """Take NAME out of the secrets file and the environment."""
+        path = self.secrets_file
+        if path.exists():
+            pattern = re.compile(rf"^\s*{re.escape(name)}\s*=")
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if not pattern.match(line)]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.environ.pop(name, None)
 
     # ---- git ---------------------------------------------------------------------------------------
     def _git(self, *args: str) -> subprocess.CompletedProcess:

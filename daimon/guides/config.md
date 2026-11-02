@@ -38,7 +38,10 @@ approves; it only works when you run as the background service).
 | `channels` | | guide `connections` |
 | `web` | on, localhost | the web page: `listen`, `port`, `auth` (guide `connections`) |
 
-The user can change any part of their setup themselves with `daimon config <part>` (model, key, knowledge, telegram, web, claude, addons, background, updates, show), and update with `daimon update`. Point them there for what you can't do: API keys, sign-ins, start at login.
+The user can change any part of their setup themselves on the web page: Settings (every key above, models and
+provider keys, restart, updates) and Connections (Telegram, add-ons, MCP servers, secrets). In a terminal,
+`daimon config <part>` does the same (model, key, knowledge, telegram, web, claude, addons, background, updates,
+show), and `daimon update` updates. Point them there for what you can't do: API keys, sign-ins, start at login.
 
 Example: the user says "the local model keeps timing out" (on a slow computer it can take minutes to load):
 ```yaml

@@ -109,8 +109,10 @@ class TaskStore:
         self.save(task)
         return task
 
-    def update(self, task_id: str, log: str | None = None, **fields: Any) -> Task:
+    def update(self, task_id: str, log: str | None = None, brief: str | None = None, **fields: Any) -> Task:
         task = self.get(task_id)
+        if brief is not None:
+            task.sections["Brief"] = brief
         for key, value in fields.items():
             if key == "status" and value not in STATUSES:
                 raise ValueError(f"status must be one of {', '.join(STATUSES)}")

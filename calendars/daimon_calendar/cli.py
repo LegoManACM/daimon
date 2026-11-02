@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
 import json
 import sys
 from datetime import datetime, timedelta
@@ -57,8 +56,9 @@ def secret_input(prompt: str) -> str:
 
     Some terminals don't pass a paste through to a hidden prompt, so Ctrl+V reads the clipboard itself, and
     Enter with nothing typed takes what's on the clipboard."""
-    if not sys.stdin.isatty():
-        return getpass.getpass(prompt)
+    if not sys.stdin.isatty():  # piped in, e.g. by the web page's setup: one line
+        print(prompt, flush=True)
+        return sys.stdin.readline().rstrip("\r\n")
     from prompt_toolkit import prompt as ask_hidden
     from prompt_toolkit.key_binding import KeyBindings
 

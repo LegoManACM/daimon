@@ -440,6 +440,32 @@ textarea.field { min-height: 110px; resize: vertical; }
 .status-tag.waiting { color: var(--warn); background: var(--warn-dim); } .status-tag.queued, .status-tag.proposed { color: var(--muted); background: var(--panel-2); }
 .ev .txt.wrap { white-space: normal; }
 .load-more { text-align: center; padding: 12px; }
+
+/* ---- shared by the setup views (Finish setup, Connections, Settings) ------------------------------------- */
+/* a section's heading: a band that stays at the top of the list while you scroll through its section */
+.gh { position: sticky; top: 0; z-index: 2; margin: 28px -12px 4px; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); font-size: 14.5px; color: var(--text); font-weight: 600; display: flex; gap: 10px; align-items: center; }
+.gh::before { content: ""; width: 3px; height: 15px; border-radius: 2px; background: var(--ember); flex: none; }
+.gh:first-child { margin-top: 16px; }
+.tag.ch { color: var(--ember); background: var(--ember-dim); border-color: transparent; }
+.tag.rs { color: var(--warn); background: var(--warn-dim); border-color: transparent; }
+.btn.sm { padding: 3px 10px; font-size: 12px; }
+.sw { width: 34px; height: 20px; border-radius: 999px; background: var(--line-2); position: relative; flex: none; }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: left .15s; }
+.sw.on { background: var(--ember); } .sw.on::after { left: 17px; background: #1a1208; }
+.field.num { width: 96px; font-family: var(--mono); text-align: right; }
+.row-item.sel { background: var(--ember-dim); margin: 0 -12px; padding: 12px; border-radius: 8px; border-bottom-color: transparent; }
+.restart-bar { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.joblog { font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow-y: auto; }
+.joblog a { color: var(--info); }
+.qr { background: #fff; border-radius: 8px; padding: 6px; width: 180px; }
+.qr svg { display: block; width: 100%; height: auto; }
+@media (max-width: 820px) {
+  .row-item.setting { flex-wrap: wrap; gap: 8px 12px; }
+  .row-item.setting .main { flex: 1 1 180px; }
+  .sw { width: 44px; height: 26px; } .sw::after { width: 20px; height: 20px; } .sw.on::after { left: 21px; }
+  .field { font-size: 16px; min-height: 44px; }
+  .btn.sm { min-height: 40px; padding: 0 12px; font-size: 13px; }
+}
 @media (max-width: 820px) {
   .conn { top: 54px; }
 }
@@ -461,6 +487,10 @@ textarea.field { min-height: 110px; resize: vertical; }
     <a data-view="changes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-4 3-9.5 5"/></svg><span>Changes</span></a>
     <a data-view="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg><span>Knowledge</span><span class="count" id="navNotes"></span></a>
     <a data-view="files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg><span>Agent files</span></a>
+    <h6>Setup</h6>
+    <a data-view="setup" id="navSetupLink" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l2 2 3-3M4 13l2 2 3-3M12 7h8M12 14h8M5 20h15"/></svg><span>Finish setup</span><span class="count hot" id="navSetup"></span></a>
+    <a data-view="connections"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></svg><span>Connections</span><span class="count" id="navConnections"></span></a>
+    <a data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Settings</span><span class="count hot" id="navSettings"></span></a>
     <div class="status sm-only" id="navPills"></div>
     <div class="foot" id="foot"></div>
   </nav>
@@ -509,7 +539,7 @@ textarea.field { min-height: 110px; resize: vertical; }
     </div>
 
     <div class="view" id="v-schedule">
-      <div class="view-head"><h2>Schedule</h2><span class="muted" style="font-size:12.5px">routines, reminders and tasks with a time</span></div>
+      <div class="view-head"><h2>Schedule</h2><span class="muted" style="font-size:12.5px">routines, reminders and tasks with a time</span><div class="spacer"></div><button class="btn" onclick="addMenu()">+ Add</button></div>
       <div class="scroll"><div class="list" id="scheduleList"></div></div>
     </div>
 
@@ -527,6 +557,11 @@ textarea.field { min-height: 110px; resize: vertical; }
       <div class="view-head"><h2>Agent files</h2><span class="muted" style="font-size:12.5px">what it's made of. Read them here; change them by asking it.</span></div>
       <div class="scroll"><div class="list" id="filesList"></div></div>
     </div>
+
+    <!-- Setup views: each is filled by its own script in static/ (setup.js, connections.js, settings.js) -->
+    <div class="view" id="v-setup"></div>
+    <div class="view" id="v-connections"></div>
+    <div class="view" id="v-settings"></div>
   </main>
 
   <aside class="rail" id="rail">
@@ -643,6 +678,7 @@ function connect() {
 function handle(m) {
   switch (m.t) {
     case "hello":
+      if (S.started && m.started !== S.started) return location.reload();  // it restarted: start from what it runs now
       Object.assign(S, { client: m.client, thread: m.thread.messages, older: m.thread.older, summary: m.thread.summary,
         live: stamp(m.live), waiting: m.waiting, events: m.events, models: m.models, spendToday: m.spend.today,
         paused: m.paused, started: m.started, version: m.version, network: m.network });
@@ -683,6 +719,7 @@ function handle(m) {
       else if (m.what === "changes" && S.view === "changes") loadChanges();
       else if (m.what === "status") { S.paused = m.paused; renderTop(); if (popKind === "status") openPop(null, "status", true); }
       else if (m.what === "network" && popKind === "net") openPop(null, "net", true);
+      CHANGED.forEach(f => f(m.what));
       break;
   }
 }
@@ -740,7 +777,7 @@ POP.status = d => `
   </div>
   <div class="psec"><h6>Channels</h6>${d.channels.map(c => `<div class="prow"><span class="dot"></span>${esc(c)}<span class="r">connected</span></div>`).join("")}</div>
   <div class="psec"><h6>Add-ons and MCP servers <span>${d.servers.reduce((a, s) => a + s.tools, 0)} tools</span></h6>
-    ${d.servers.length ? d.servers.map(s => `<div class="prow"><span class="dot ${s.error ? "err" : ""}"></span><span class="ell">${esc(s.name)}</span><span class="r" title="${esc(s.error)}">${s.error ? esc(oneLine(s.error, 48)) : s.tools + " tools"}</span></div>`).join("") : `<div class="prow faint">${d.servers_configured ? "Not connected yet (they connect on the next turn)." : "None set up. Ask the agent to connect one, or run `daimon config addons`."}</div>`}
+    ${d.servers.length ? d.servers.map(s => `<div class="prow"><span class="dot ${s.error ? "err" : ""}"></span><span class="ell">${esc(s.name)}</span><span class="r" title="${esc(s.error)}">${s.error ? esc(oneLine(s.error, 48)) : s.tools + " tools"}</span></div>`).join("") : `<div class="prow faint">${d.servers_configured ? "Not connected yet (they connect on the next turn)." : "None set up. Connect one under Connections, or ask the agent."}</div>`}
   </div>
   <div class="pacts">
     <button class="btn" onclick="togglePause()">${d.paused ? "Resume background work" : "Pause background work"}</button>
@@ -776,7 +813,7 @@ function reach(d) {
     tailscale: "It listens on this computer's Tailscale address, so only your tailnet can reach it.",
     all: "It listens on every network this computer is on." }[d.listen] || `It listens on ${d.bound}.`;
   const who = { tailscale: " Only devices logged in to your Tailscale account get in.", token: " Each browser signs in once with the token from the secrets file.", none: " There's no sign-in." }[d.auth_name] || "";
-  return where + who + " Change it with `daimon config web`.";
+  return where + who + " Change it in Settings → Web page.";
 }
 
 POP.waiting = () => `<div class="ph"><span>Waiting on you</span><span>${S.waiting.length}</span></div>` +
@@ -834,6 +871,22 @@ $("#picker").addEventListener("click", async e => {
 async function togglePause() {
   try { const r = await api("/api/pause", { paused: !S.paused }); S.paused = r.paused; renderTop(); openPop(null, "status", true);
     toast(r.paused ? "Background work paused. Chat still works." : "Background work resumed"); } catch (e) { fail(e); }
+}
+// Restart the agent and follow it: to its new address when the web page's port or address changed, and a fresh
+// load of the page once it answers again. Used by the restart buttons in Settings and Connections.
+async function restartAgent() {
+  const r = await api("/api/restart", {});
+  const urls = (r.urls || []).map(u => new URL(u));
+  const target = (urls.find(u => u.hostname === location.hostname) || urls[0] || location).origin;
+  $("#conn").textContent = target === location.origin ? "Restarting…" : `Restarting; moving to ${target}…`;
+  $("#conn").classList.add("show");
+  const sleep = ms => new Promise(ok => setTimeout(ok, ms));
+  const up = async origin => { try { await fetch(origin + "/manifest.json", { mode: "no-cors", cache: "no-store" }); return true; } catch { return false; } };
+  for (let i = 0; i < 30 && await up(location.origin); i++) await sleep(1000);  // until this one stops: it's restarting
+  // then until it answers where it'll be. Some browsers won't let a page ask another port, so a few seconds of no
+  // answer from a new address isn't proof it's down: go there anyway, and its own page takes it from there.
+  for (let i = 0; i < 45 && !await up(target); i++) await sleep(1000);
+  if (target === location.origin) location.reload(); else location.href = target + "/" + location.hash;
 }
 function copy(text) { navigator.clipboard?.writeText(text).then(() => toast("Copied"), () => toast(esc(text))); }
 async function signOut() { await api("/api/logout", {}).catch(() => {}); location.reload(); }
@@ -1072,7 +1125,7 @@ $("#filters").addEventListener("click", e => { const b = e.target.closest(".filt
 
 // ---- tasks -------------------------------------------------------------------------------------------
 async function loadTasks() {
-  try { const r = await api("/api/tasks"); S.tasks = r.tasks; S.workers = r.workers; } catch (e) { return; }
+  try { const r = await api("/api/tasks"); S.tasks = r.tasks; S.workers = r.workers; S.projects = r.projects || []; } catch (e) { return; }
   const open = S.tasks.filter(t => ["proposed", "queued", "running", "waiting"].includes(t.status)).length;
   $("#navTasks").textContent = open || "";
   if (S.view === "tasks") renderBoard();
@@ -1126,6 +1179,7 @@ function showTask(t) {
     <h6>Log</h6><div class="log">${log || `<div><span></span><span class="faint">Empty.</span></div>`}</div>
     ${Object.keys(sec).filter(k => !["Brief", "Log", "Result"].includes(k)).map(k => `<h6>${esc(k)}</h6><div class="body">${md(sec[k])}</div>`).join("")}
     <div class="btns" style="margin-top:18px">
+      <button class="btn" onclick="editTask('${esc(t.id)}')">Edit</button>
       ${t.status === "proposed" ? `<button class="btn primary" onclick="taskAct('${esc(t.id)}','go')">Go</button><button class="btn" onclick="taskAct('${esc(t.id)}','skip')">Skip</button>` : ""}
       ${["queued", "running", "waiting"].includes(t.status) ? `<button class="btn" onclick="if(confirm('Cancel this task?'))taskAct('${esc(t.id)}','cancel')">Cancel task</button>` : ""}
       ${["failed", "cancelled", "done"].includes(t.status) ? `<button class="btn" onclick="taskAct('${esc(t.id)}','status',{status:'queued'})">Run again</button>` : ""}
@@ -1157,7 +1211,7 @@ async function loadSchedule() {
     if (day !== last) { html += `<div class="timeline-hour">${esc(day.toUpperCase())}</div>`; last = day; }
     const sub = x.kind === "routine" ? `routine · ${esc(x.schedule)}${x.worker !== "main" ? " · " + esc(x.worker) : ""}${x.about ? " · " + esc(oneLine(x.about, 120)) : ""}${x.last ? " · last ran " + esc(when(x.last)) : ""}`
       : `${x.kind === "wake" ? "reminder" : "task · " + esc(x.worker)}${x.project ? " · project " + esc(x.project) : ""}`;
-    html += `<div class="row-item"${x.id ? ` style="cursor:pointer" onclick="openTask('${esc(x.id)}')"` : ""}><div class="main"><div class="title">${esc(x.name)}</div><div class="sub">${sub}</div></div>
+    html += `<div class="row-item" style="cursor:pointer" onclick="openScheduled(${S.schedule.indexOf(x)})"><div class="main"><div class="title">${esc(x.name)}</div><div class="sub">${sub}</div></div>
       <div class="side">${x.next ? esc(new Date(x.next).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) + "<br>" + esc(rel(x.next)) : ""}</div></div>`;
   }
   $("#scheduleList").innerHTML = html || `<div class="empty">No routines or scheduled tasks. Ask the agent: "every Sunday at 6pm, review my week".</div>`;
@@ -1227,6 +1281,9 @@ function toast(html, undo) {
   t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), undo ? 7000 : 4000);
 }
 const LOAD = { tasks: () => S.tasks ? renderBoard() : loadTasks(), schedule: loadSchedule, changes: loadChanges, knowledge: loadNotes, files: loadFiles, activity: renderFeed };
+// The setup views live in their own scripts (static/*.js): each adds LOAD[view], and may push a function to
+// CHANGED to hear the server's "changed" notices ("settings", "connections", "setup", "models", ...).
+const CHANGED = [];
 function go(view) {
   S.view = view;
   $$(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + view));
@@ -1261,7 +1318,14 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 
 const start = (location.hash || "").slice(1);
 connect();
-if (LOAD[start] || start === "chat") go(start);
+// after the view scripts below have added their LOAD entries
+addEventListener("DOMContentLoaded", () => { if (LOAD[start] || start === "chat") go(start); });
+// a link or a typed address to another view of the page (#settings, #tasks...) doesn't reload it
+addEventListener("hashchange", () => { const v = location.hash.slice(1); if (LOAD[v] && v !== S.view) go(v); });
 </script>
+<script src="/static/taskedit.js"></script>
+<script src="/static/setup.js"></script>
+<script src="/static/connections.js"></script>
+<script src="/static/settings.js"></script>
 </body>
 </html>

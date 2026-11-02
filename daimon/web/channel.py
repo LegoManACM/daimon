@@ -77,10 +77,15 @@ class WebChannel:
         self._server = None
         self._serving: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
+        from .connections import Jobs
+        self.boot: dict[str, Any] = {"config": {}, "secrets": {}, "notes": []}
+        self.jobs = Jobs()  # add-on sign-ins started from the page
 
     # ---- Channel -------------------------------------------------------------------------------------
     def attach(self, agent) -> None:  # noqa: ANN001 - called by the gateway before connect
+        from . import settings
         self.agent = agent
+        self.boot = settings.boot_state(self.home)  # what it started with, to tell which changes need a restart
         agent.thread.listeners.append(self._thread_changed)
 
     async def connect(self, on_message: OnMessage) -> None:

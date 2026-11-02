@@ -35,28 +35,38 @@ You need:
 
 ## Setup
 
-`daimon setup` walks you through it a step at a time:
+`daimon setup` asks three things in the terminal, then you finish in your browser:
 
 1. **Home folder**, where the agent lives (default `~/.daimon`).
-2. **Knowledge**, where its notes live: its own folder (the default), or one you already have.
-3. **Model.** Pick a provider (Anthropic, OpenAI, OpenRouter, Google Gemini or Ollama) and paste its key. The key
+2. **Model.** Pick a provider (Anthropic, OpenAI, OpenRouter, Google Gemini or Ollama) and paste its key. The key
    shows as dots while you paste, then setup shows its first and last few characters and checks it with the
    provider. Then pick the main model from the provider's own current list: type to filter what's shown, or search
    all of them (OpenRouter has hundreds; try `sonnet`, `gpt` or `free`).
-4. **Telegram** (optional). Make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message
-   the bot once; setup picks up your chat id itself.
-5. **Claude Code** (optional). If `claude` is installed and logged in, workers can hand coding work to it.
-6. **Add-ons** (optional): [Canvas](canvas/README.md) for your classes, [text messages](messaging/README.md)
-   through Google Messages, and your [calendars](calendars/README.md) (Google, Outlook, iCloud, .ics). Setup installs them, connects them to the agent and runs their sign-in.
-7. **Background.** Start Daimon at login so it keeps running after you close the terminal, and choose whether it
-   installs new releases by itself.
+3. **Where you'll open it**: your devices on Tailscale, only this computer, or anything on your network.
 
-Keys and tokens go in `~/.daimon-secrets.env`, outside the agent's folder.
+It then starts Daimon in the background (and at login) and opens the [web page](#the-web-page) on **Finish setup**,
+with a link and QR code for your phone. From there, each optional:
+
+- **Telegram**: make a bot with [@BotFather](https://t.me/BotFather), paste its token, then message the bot once;
+  the page picks up your chat id itself.
+- **Add-ons**: [Canvas](canvas/README.md) for your classes, [text messages](messaging/README.md) through Google
+  Messages, and your [calendars](calendars/README.md) (Google, Outlook, iCloud, .ics). The page installs them,
+  connects them to the agent and runs their sign-in, showing the link to open or the code to type.
+- **Claude Code**: if `claude` is installed and logged in, workers can hand coding work to it.
+- **Your other devices**: a sign-in link and QR code.
+
+`daimon setup --full` asks everything in the terminal instead, as before. Keys and tokens go in
+`~/.daimon-secrets.env`, outside the agent's folder.
 
 ### Changing things later
 
-`daimon config` changes one part without going through setup again. With no argument it shows a menu; or name
-the part:
+Everything is on the web page: **Settings** has every option in config.yaml (approvals, model timeouts, background
+jobs, workers, knowledge, the web page, updates), the models and provider keys, a restart button, and the agent's
+files to edit directly; **Connections** has Telegram, the add-ons, any other MCP server (with what each tool may do
+without asking) and your keys and secrets. Each change is a commit you can undo under Changes.
+
+In a terminal, `daimon config` changes one part without going through setup again. With no argument it shows a
+menu; or name the part:
 
 ```bash
 daimon config model        # provider and main model
@@ -126,8 +136,9 @@ The running agent serves a page for chatting with it and watching it work, from 
 Next to the conversation you see what each worker is doing right now (thinking, writing, which tool it's running,
 tokens per second, the end of what it's writing), background jobs and what's coming up. Every reply shows the tool
 calls behind it; tap one for its result. Other views: Activity (every tool call, notice and error as it happens),
-Tasks (go / skip proposals, answer a worker's question, start or cancel tasks), Schedule, Changes (the agent's own
-commits, each with its diff and an Undo), Knowledge and the agent's files. The pills at the top open too: status and
+Tasks (go / skip proposals, answer a worker's question, start, edit or cancel tasks), Schedule (change or add
+reminders, scheduled tasks and routines), Changes (the agent's own commits, each with its diff and an Undo), Knowledge
+and the agent's files, and under Setup: Finish setup, Connections and Settings. The pills at the top open too: status and
 pause, the main model (pick another from models.yaml), today's spend by model and by worker, everything waiting on
 you, and how the page is reached. Phone and computer get the same features in their own layout; on a phone, add it
 to the home screen.
@@ -136,7 +147,7 @@ Approvals show up on the page as cards and are asked on Telegram at the same tim
 
 A new agent has it on at <http://localhost:8770>, this computer only, served while the agent runs. `daimon web`
 opens it in your browser, already signed in; `daimon web --link` prints a link that signs in another device, like
-your phone. `daimon config web` changes where it's reachable and who gets in. Two settings in config.yaml's `web:` section:
+your phone. Settings → Web page (or `daimon config web`) changes where it's reachable and who gets in. Two settings in config.yaml's `web:` section:
 
 | `listen` | Reachable from |
 |---|---|
